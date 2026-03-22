@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">MeshSOS</string>
+    <string name="notification_channel_name">Mesh SOS Relay</string>
+    <string name="notification_channel_desc">Keeps the emergency mesh relay running in background</string>
+</resources>
