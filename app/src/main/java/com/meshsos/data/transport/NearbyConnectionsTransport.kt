@@ -81,7 +81,7 @@ class NearbyConnectionsTransport @Inject constructor(
 
     private fun startAdvertising() {
         val options = AdvertisingOptions.Builder()
-            .setStrategy(Strategy.P2P_CLUSTER) // Many-to-many mesh
+            .setStrategy(Strategy.P2P_STAR) // Star topology for better reliability
             .build()
 
         connectionsClient.startAdvertising(
@@ -102,7 +102,7 @@ class NearbyConnectionsTransport @Inject constructor(
 
     private fun startDiscovery() {
         val options = DiscoveryOptions.Builder()
-            .setStrategy(Strategy.P2P_CLUSTER)
+            .setStrategy(Strategy.P2P_STAR) // Star topology
             .build()
 
         connectionsClient.startDiscovery(
