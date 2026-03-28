@@ -3,6 +3,7 @@ package com.meshsos.presentation.screens
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -168,7 +169,7 @@ fun MeshStatusScreen(viewModel: MeshViewModel) {
 // ── Reusable components ───────────────────────────────────────────────────────
 
 @Composable
-fun SectionCard(title: String, content: @Composable Column.() -> Unit) {
+fun SectionCard(title: String, content: @Composable ColumnScope.() -> Unit) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),

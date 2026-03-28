@@ -43,9 +43,9 @@
     <application
         android:name=".MeshSosApp"
         android:allowBackup="false"
-        android:icon="@mipmap/ic_launcher"
+        android:icon="@drawable/ic_mesh_notification"
         android:label="@string/app_name"
-        android:roundIcon="@mipmap/ic_launcher_round"
+        android:roundIcon="@drawable/ic_mesh_notification"
         android:supportsRtl="true"
         android:theme="@style/Theme.MeshSOS"
         tools:targetApi="31">

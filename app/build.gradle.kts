@@ -8,12 +8,12 @@ plugins {
 
 android {
     namespace = "com.meshsos"
-    compileSdk = 34
+    compileSdk = 35
 
     defaultConfig {
         applicationId = "com.meshsos"
         minSdk = 26
-        targetSdk = 34
+        targetSdk = 35
         versionCode = 1
         versionName = "1.0.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
@@ -55,6 +55,9 @@ android {
 }
 
 dependencies {
+    // Force consistent Kotlin stdlib across all transitive deps
+    implementation(platform("org.jetbrains.kotlin:kotlin-bom:2.2.20"))
+
     // Core
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
