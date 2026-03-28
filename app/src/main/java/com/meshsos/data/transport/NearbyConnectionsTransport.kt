@@ -91,8 +91,10 @@ class NearbyConnectionsTransport @Inject constructor(
             options
         ).addOnSuccessListener {
             Log.d(TAG, "Advertising started")
+            _peerEvents.tryEmit(PeerEvent.Log("Nearby", "Advertising started"))
         }.addOnFailureListener { e ->
             Log.e(TAG, "Advertising failed: ${e.message}")
+            _peerEvents.tryEmit(PeerEvent.Error("Adv failed: ${e.message}"))
         }
     }
 
@@ -109,8 +111,10 @@ class NearbyConnectionsTransport @Inject constructor(
             options
         ).addOnSuccessListener {
             Log.d(TAG, "Discovery started")
+            _peerEvents.tryEmit(PeerEvent.Log("Nearby", "Discovery started"))
         }.addOnFailureListener { e ->
             Log.e(TAG, "Discovery failed: ${e.message}")
+            _peerEvents.tryEmit(PeerEvent.Error("Disc failed: ${e.message}"))
         }
     }
 
@@ -119,6 +123,7 @@ class NearbyConnectionsTransport @Inject constructor(
     private val connectionLifecycleCallback = object : ConnectionLifecycleCallback() {
         override fun onConnectionInitiated(endpointId: String, info: ConnectionInfo) {
             Log.d(TAG, "Connection initiated from $endpointId (${info.endpointName})")
+            _peerEvents.tryEmit(PeerEvent.Log("Nearby", "Conn initiated: $endpointId (${info.endpointName})"))
             // Auto-accept all connections in mesh mode
             connectionsClient.acceptConnection(endpointId, payloadCallback)
         }
@@ -153,6 +158,7 @@ class NearbyConnectionsTransport @Inject constructor(
     private val endpointDiscoveryCallback = object : EndpointDiscoveryCallback() {
         override fun onEndpointFound(endpointId: String, info: DiscoveredEndpointInfo) {
             Log.d(TAG, "Endpoint found: $endpointId service=${info.serviceId}")
+            _peerEvents.tryEmit(PeerEvent.Log("Nearby", "Endpoint found: $endpointId (${info.serviceId})"))
             if (info.serviceId == SERVICE_ID && !connectedEndpoints.contains(endpointId)) {
                 connectionsClient.requestConnection(
                     localDeviceName,
@@ -160,6 +166,7 @@ class NearbyConnectionsTransport @Inject constructor(
                     connectionLifecycleCallback
                 ).addOnFailureListener { e ->
                     Log.w(TAG, "Request connection failed to $endpointId: ${e.message}")
+                    _peerEvents.tryEmit(PeerEvent.Error("Conn Req failed -> $endpointId: ${e.message}"))
                 }
             }
         }

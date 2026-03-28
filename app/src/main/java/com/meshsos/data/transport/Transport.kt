@@ -42,4 +42,6 @@ sealed class PeerEvent {
     data class Connected(val deviceId: String, val endpointName: String) : PeerEvent()
     data class Disconnected(val deviceId: String) : PeerEvent()
     data class ConnectionFailed(val deviceId: String, val reason: String) : PeerEvent()
+    data class Error(val message: String) : PeerEvent()
+    data class Log(val tag: String, val message: String) : PeerEvent()
 }

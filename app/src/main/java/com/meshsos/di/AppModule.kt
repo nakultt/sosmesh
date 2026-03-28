@@ -43,10 +43,10 @@ object AppModule {
     @Provides
     @Singleton
     @Named("deviceName")
-    fun provideDeviceName(@ApplicationContext context: Context): String {
+    fun provideDeviceName(@ApplicationContext context: Context, @Named("deviceId") deviceId: String): String {
         val prefs = context.getSharedPreferences("mesh_identity", Context.MODE_PRIVATE)
         return prefs.getString("device_name", null)
-            ?: "Device-${android.os.Build.MODEL.take(6)}"
+            ?: "Device-${android.os.Build.MODEL.take(6)}-${deviceId.take(3)}"
     }
 
     // ── Server config ─────────────────────────────────────────────────────────

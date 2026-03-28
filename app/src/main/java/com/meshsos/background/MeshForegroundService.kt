@@ -91,41 +91,87 @@ class MeshForegroundService : LifecycleService() {
 
     private fun launchMesh() {
         lifecycleScope.launch(Dispatchers.IO) {
-            transportManager.start()
-            Log.i(TAG, "Transport started: ${transportManager.activeTransport.value.transportName}")
+            try {
+                transportManager.start()
+                Log.i(TAG, "Transport started: ${transportManager.activeTransport.value.transportName}")
 
-            // Wire incoming packets → state machine
-            launch {
-                transportManager.activeTransport.collectLatest { transport ->
-                    launch {
-                        transport.incomingPackets.collect { incoming ->
-                            stateMachine.onPacketReceived(this, incoming.packet, incoming.fromDevice)
+                // Wire incoming packets → state machine
+                launch {
+                    transportManager.activeTransport.collectLatest { transport ->
+                        launch {
+                            transport.incomingPackets.collect { incoming ->
+                                stateMachine.onPacketReceived(this@launch, incoming.packet, incoming.fromDevice)
+                            }
                         }
-                    }
-                    launch {
-                        transport.incomingAcks.collect { ack ->
-                            stateMachine.onAckReceived(ack)
+                        launch {
+                            transport.incomingAcks.collect { ack ->
+                                stateMachine.onAckReceived(ack)
+                            }
                         }
-                    }
-                    launch {
-                        transport.peerEvents.collect { event ->
-                            when (event) {
-                                is com.meshsos.data.transport.PeerEvent.Connected ->
-                                    stateMachine.onPeerConnected(event.deviceId)
-                                is com.meshsos.data.transport.PeerEvent.Disconnected ->
-                                    stateMachine.onPeerDisconnected(event.deviceId)
-                                else -> {}
+                        launch {
+                            transport.peerEvents.collect { event ->
+                                when (event) {
+                                    is com.meshsos.data.transport.PeerEvent.Connected ->
+                                        stateMachine.onPeerConnected(event.deviceId)
+                                    is com.meshsos.data.transport.PeerEvent.Disconnected ->
+                                        stateMachine.onPeerDisconnected(event.deviceId)
+                                    is com.meshsos.data.transport.PeerEvent.ConnectionFailed -> {
+                                        meshEventDao.insert(
+                                            MeshEventEntity(
+                                                timestamp = Instant.now().epochSecond,
+                                                eventType = MeshEventType.ERROR.name,
+                                                message = "Conn failed (${event.deviceId}): ${event.reason}",
+                                                packetId = null,
+                                                deviceId = event.deviceId
+                                            )
+                                        )
+                                    }
+                                    is com.meshsos.data.transport.PeerEvent.Error -> {
+                                        meshEventDao.insert(
+                                            MeshEventEntity(
+                                                timestamp = Instant.now().epochSecond,
+                                                eventType = MeshEventType.ERROR.name,
+                                                message = "Error: ${event.message}",
+                                                packetId = null,
+                                                deviceId = null
+                                            )
+                                        )
+                                    }
+                                    is com.meshsos.data.transport.PeerEvent.Log -> {
+                                        meshEventDao.insert(
+                                            MeshEventEntity(
+                                                timestamp = Instant.now().epochSecond,
+                                                eventType = MeshEventType.TRANSPORT_SWITCHED.name,
+                                                message = "[${event.tag}] ${event.message}",
+                                                packetId = null,
+                                                deviceId = null
+                                            )
+                                        )
+                                    }
+                                    else -> {}
+                                }
                             }
                         }
                     }
                 }
-            }
 
-            // Wire state machine forward callback → transport
-            stateMachine.setForwardCallback { packet ->
-                lifecycleScope.launch(Dispatchers.IO) {
-                    transportManager.broadcastPacket(packet)
+                // Wire state machine forward callback → transport
+                stateMachine.setForwardCallback { packet ->
+                    lifecycleScope.launch(Dispatchers.IO) {
+                        transportManager.broadcastPacket(packet)
+                    }
                 }
+            } catch (e: Exception) {
+                Log.e(TAG, "Mesh crash: ${e.message}", e)
+                meshEventDao.insert(
+                    MeshEventEntity(
+                        timestamp = Instant.now().epochSecond,
+                        eventType = MeshEventType.ERROR.name,
+                        message = "Fatal Crash: ${e.message}",
+                        packetId = null,
+                        deviceId = null
+                    )
+                )
             }
         }
     }
