@@ -27,7 +27,9 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import java.util.Collections
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -56,11 +58,11 @@ class BleGattTransport @Inject constructor(
     private val bleScanner get() = bluetoothAdapter?.bluetoothLeScanner
 
     private var gattServer: BluetoothGattServer? = null
-    private val connectedGattClients = mutableSetOf<BluetoothDevice>()
-    private val connectedGatts = mutableMapOf<String, BluetoothGatt>() // address -> gatt
+    private val connectedGattClients = Collections.synchronizedSet(mutableSetOf<BluetoothDevice>())
+    private val connectedGatts = ConcurrentHashMap<String, BluetoothGatt>() // address -> gatt
 
     // Chunk reassembly buffer: deviceAddress -> list of chunks
-    private val chunkBuffer = mutableMapOf<String, MutableList<ByteArray>>()
+    private val chunkBuffer = ConcurrentHashMap<String, MutableList<ByteArray>>()
 
     private val _peerEvents = MutableSharedFlow<PeerEvent>(extraBufferCapacity = 32)
     override val peerEvents: SharedFlow<PeerEvent> = _peerEvents.asSharedFlow()

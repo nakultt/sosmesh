@@ -67,7 +67,7 @@ fun RelayLogScreen(viewModel: MeshViewModel) {
         ) {
             Text(
                 "Mesh Event Log",
-                color = Color.White,
+                color = MaterialTheme.colorScheme.onBackground,
                 fontSize = 18.sp,
                 fontWeight = FontWeight.Bold
             )
@@ -147,7 +147,7 @@ fun EventRow(event: MeshEventEntity) {
                 }
                 Text(
                     event.message,
-                    color = Color.White,
+                    color = MaterialTheme.colorScheme.onBackground,
                     fontSize = 13.sp
                 )
                 event.packetId?.let {

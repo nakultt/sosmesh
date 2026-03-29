@@ -20,12 +20,12 @@ import com.meshsos.domain.model.AckPacket
 import com.meshsos.domain.model.PacketType
 import com.meshsos.domain.model.SosPacket
 import dagger.hilt.android.qualifiers.ApplicationContext
-import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.suspendCancellableCoroutine
 import javax.inject.Inject
+import javax.inject.Named
 import javax.inject.Singleton
 import kotlin.coroutines.resume
 
@@ -35,14 +35,16 @@ private const val SERVICE_ID = "com.meshsos.emergency"
 @Singleton
 class NearbyConnectionsTransport @Inject constructor(
     @ApplicationContext private val context: Context,
-    private val localDeviceId: String,
-    private val localDeviceName: String
+    @Named("deviceId") private val localDeviceId: String,
+    @Named("deviceName") private val localDeviceName: String
 ) : Transport {
 
     override val transportName = "NearbyConnections (WiFi Direct + BLE)"
 
     private val connectionsClient: ConnectionsClient = Nearby.getConnectionsClient(context)
     private val connectedEndpoints = mutableSetOf<String>()
+    private val pendingConnections = mutableSetOf<String>() // endpoints we're currently connecting to
+    private val failedEndpoints = mutableMapOf<String, Int>() // endpoint -> retry count
 
     private val _peerEvents = MutableSharedFlow<PeerEvent>(extraBufferCapacity = 32)
     override val peerEvents: SharedFlow<PeerEvent> = _peerEvents.asSharedFlow()
@@ -58,7 +60,7 @@ class NearbyConnectionsTransport @Inject constructor(
     override suspend fun start() {
         startAdvertising()
         startDiscovery()
-        Log.i(TAG, "NearbyConnections started. deviceId=$localDeviceId")
+        Log.i(TAG, "NearbyConnections started. deviceId=$localDeviceId name=$localDeviceName")
     }
 
     override suspend fun stop() {
@@ -66,12 +68,12 @@ class NearbyConnectionsTransport @Inject constructor(
         connectionsClient.stopDiscovery()
         connectionsClient.stopAllEndpoints()
         connectedEndpoints.clear()
+        pendingConnections.clear()
+        failedEndpoints.clear()
         Log.i(TAG, "NearbyConnections stopped")
     }
 
     override fun isAvailable(): Boolean {
-        // Nearby Connections is available on all devices with Google Play Services
-        // Actual WiFi Direct availability is checked by TransportManager
         return true
     }
 
@@ -81,7 +83,7 @@ class NearbyConnectionsTransport @Inject constructor(
 
     private fun startAdvertising() {
         val options = AdvertisingOptions.Builder()
-            .setStrategy(Strategy.P2P_STAR) // Star topology for better reliability
+            .setStrategy(Strategy.P2P_CLUSTER)
             .build()
 
         connectionsClient.startAdvertising(
@@ -90,8 +92,8 @@ class NearbyConnectionsTransport @Inject constructor(
             connectionLifecycleCallback,
             options
         ).addOnSuccessListener {
-            Log.d(TAG, "Advertising started")
-            _peerEvents.tryEmit(PeerEvent.Log("Nearby", "Advertising started"))
+            Log.d(TAG, "Advertising started as '$localDeviceName'")
+            _peerEvents.tryEmit(PeerEvent.Log("Nearby", "Advertising started as '$localDeviceName'"))
         }.addOnFailureListener { e ->
             Log.e(TAG, "Advertising failed: ${e.message}")
             _peerEvents.tryEmit(PeerEvent.Error("Adv failed: ${e.message}"))
@@ -102,7 +104,7 @@ class NearbyConnectionsTransport @Inject constructor(
 
     private fun startDiscovery() {
         val options = DiscoveryOptions.Builder()
-            .setStrategy(Strategy.P2P_STAR) // Star topology
+            .setStrategy(Strategy.P2P_CLUSTER)
             .build()
 
         connectionsClient.startDiscovery(
@@ -129,9 +131,11 @@ class NearbyConnectionsTransport @Inject constructor(
         }
 
         override fun onConnectionResult(endpointId: String, result: ConnectionResolution) {
+            pendingConnections.remove(endpointId)
             when (result.status.statusCode) {
                 ConnectionsStatusCodes.STATUS_OK -> {
                     connectedEndpoints.add(endpointId)
+                    failedEndpoints.remove(endpointId)
                     Log.i(TAG, "Connected: $endpointId (peers=${connectedEndpoints.size})")
                     _peerEvents.tryEmit(PeerEvent.Connected(endpointId, endpointId))
                 }
@@ -142,6 +146,11 @@ class NearbyConnectionsTransport @Inject constructor(
                 ConnectionsStatusCodes.STATUS_ERROR -> {
                     Log.e(TAG, "Connection error: $endpointId")
                     _peerEvents.tryEmit(PeerEvent.ConnectionFailed(endpointId, "Error"))
+                    // Will be retried on next discovery cycle
+                }
+                else -> {
+                    Log.w(TAG, "Connection unknown status ${result.status.statusCode}: $endpointId")
+                    _peerEvents.tryEmit(PeerEvent.ConnectionFailed(endpointId, "Status ${result.status.statusCode}"))
                 }
             }
         }
@@ -157,22 +166,68 @@ class NearbyConnectionsTransport @Inject constructor(
 
     private val endpointDiscoveryCallback = object : EndpointDiscoveryCallback() {
         override fun onEndpointFound(endpointId: String, info: DiscoveredEndpointInfo) {
-            Log.d(TAG, "Endpoint found: $endpointId service=${info.serviceId}")
-            _peerEvents.tryEmit(PeerEvent.Log("Nearby", "Endpoint found: $endpointId (${info.serviceId})"))
-            if (info.serviceId == SERVICE_ID && !connectedEndpoints.contains(endpointId)) {
-                connectionsClient.requestConnection(
-                    localDeviceName,
-                    endpointId,
-                    connectionLifecycleCallback
-                ).addOnFailureListener { e ->
-                    Log.w(TAG, "Request connection failed to $endpointId: ${e.message}")
-                    _peerEvents.tryEmit(PeerEvent.Error("Conn Req failed -> $endpointId: ${e.message}"))
+            Log.d(TAG, "Endpoint found: $endpointId name=${info.endpointName} service=${info.serviceId}")
+            _peerEvents.tryEmit(PeerEvent.Log("Nearby", "Endpoint found: $endpointId (${info.endpointName})"))
+
+            if (info.serviceId != SERVICE_ID) return
+            if (connectedEndpoints.contains(endpointId)) return
+            if (pendingConnections.contains(endpointId)) return
+
+            // ── TIE-BREAKER: prevent both devices from requesting simultaneously ──
+            // Only the device with the lexicographically SMALLER name initiates.
+            // The other device waits — it will receive the connection via onConnectionInitiated.
+            val shouldInitiate = localDeviceName < info.endpointName
+            Log.d(TAG, "Tie-breaker: localName='$localDeviceName' remoteName='${info.endpointName}' shouldInitiate=$shouldInitiate")
+            _peerEvents.tryEmit(PeerEvent.Log("Nearby", "Tie-break: '$localDeviceName' vs '${info.endpointName}' → ${if (shouldInitiate) "CONNECT" else "WAIT"}"))
+
+            if (!shouldInitiate) {
+                // We have the "larger" name — wait for the other side to connect to us
+                return
+            }
+
+            pendingConnections.add(endpointId)
+            connectionsClient.requestConnection(
+                localDeviceName,
+                endpointId,
+                connectionLifecycleCallback
+            ).addOnSuccessListener {
+                Log.d(TAG, "Connection requested to $endpointId")
+                _peerEvents.tryEmit(PeerEvent.Log("Nearby", "Conn requested → $endpointId"))
+            }.addOnFailureListener { e ->
+                pendingConnections.remove(endpointId)
+                val retryCount = failedEndpoints.getOrDefault(endpointId, 0) + 1
+                failedEndpoints[endpointId] = retryCount
+                Log.w(TAG, "Request connection failed to $endpointId (attempt $retryCount): ${e.message}")
+                _peerEvents.tryEmit(PeerEvent.Error("Conn Req failed → $endpointId: ${e.message}"))
+
+                // Retry after a delay if under max retries
+                if (retryCount <= 3) {
+                    val delayMs = (1000L * retryCount) + (Math.random() * 500).toLong()
+                    android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                        if (!connectedEndpoints.contains(endpointId) && !pendingConnections.contains(endpointId)) {
+                            Log.d(TAG, "Retrying connection to $endpointId (attempt ${retryCount + 1})")
+                            _peerEvents.tryEmit(PeerEvent.Log("Nearby", "Retry #${retryCount + 1} → $endpointId"))
+                            pendingConnections.add(endpointId)
+                            connectionsClient.requestConnection(
+                                localDeviceName,
+                                endpointId,
+                                connectionLifecycleCallback
+                            ).addOnFailureListener { retryErr ->
+                                pendingConnections.remove(endpointId)
+                                Log.w(TAG, "Retry failed to $endpointId: ${retryErr.message}")
+                                _peerEvents.tryEmit(PeerEvent.Error("Retry failed → $endpointId: ${retryErr.message}"))
+                            }
+                        }
+                    }, delayMs)
                 }
             }
         }
 
         override fun onEndpointLost(endpointId: String) {
             Log.d(TAG, "Endpoint lost: $endpointId")
+            pendingConnections.remove(endpointId)
+            failedEndpoints.remove(endpointId)
+            _peerEvents.tryEmit(PeerEvent.Log("Nearby", "Endpoint lost: $endpointId"))
         }
     }
 
@@ -203,7 +258,6 @@ class NearbyConnectionsTransport @Inject constructor(
         }
 
         override fun onPayloadTransferUpdate(endpointId: String, update: PayloadTransferUpdate) {
-            // Optional: track transfer progress for large payloads
             if (update.status == PayloadTransferUpdate.Status.FAILURE) {
                 Log.w(TAG, "Transfer failed to $endpointId")
             }
@@ -245,3 +299,4 @@ class NearbyConnectionsTransport @Inject constructor(
                 .addOnFailureListener { e -> cont.resume(Result.failure(e)) }
         }
 }
+

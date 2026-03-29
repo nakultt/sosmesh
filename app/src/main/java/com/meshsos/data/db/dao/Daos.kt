@@ -56,8 +56,14 @@ interface MeshEventDao {
     @Query("SELECT * FROM mesh_events ORDER BY timestamp DESC LIMIT :limit")
     fun getRecentFlow(limit: Int = 100): Flow<List<MeshEventEntity>>
 
+    @Query("SELECT * FROM mesh_events ORDER BY timestamp DESC")
+    fun getAllFlow(): Flow<List<MeshEventEntity>>
+
     @Query("DELETE FROM mesh_events WHERE timestamp < :cutoff")
     suspend fun deleteOlderThan(cutoff: Long)
+
+    @Query("DELETE FROM mesh_events")
+    suspend fun deleteAll()
 
     @Query("SELECT COUNT(*) FROM mesh_events")
     suspend fun count(): Int

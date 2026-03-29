@@ -23,6 +23,7 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.Locale
 import javax.inject.Inject
+import javax.inject.Named
 import javax.inject.Singleton
 import kotlin.coroutines.resume
 
@@ -34,7 +35,7 @@ class SendSosUseCase @Inject constructor(
     private val stateMachine: MeshStateMachine,
     private val transportManager: TransportManager,
     private val deduplicationService: DeduplicationService,
-    private val localDeviceId: String,
+    @Named("deviceId") private val localDeviceId: String,
     private val batteryMonitor: com.meshsos.domain.service.BatteryMonitor
 ) {
     @SuppressLint("MissingPermission")

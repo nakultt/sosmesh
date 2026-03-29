@@ -40,7 +40,9 @@ class TransportManager @Inject constructor(
         isRunning = true
         registerWifiP2pReceiver()
         val transport = selectBestTransport()
-        switchTo(transport)
+        _activeTransport.value = transport
+        transport.start()
+        Log.i(TAG, "Transport started: ${transport.transportName}")
     }
 
     suspend fun stop() {

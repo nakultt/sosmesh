@@ -32,6 +32,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 import java.time.Instant
 import javax.inject.Inject
+import javax.inject.Named
 
 private const val TAG = "MeshForegroundService"
 private const val CHANNEL_ID = "mesh_sos_channel"
@@ -47,10 +48,11 @@ class MeshForegroundService : LifecycleService() {
     @Inject lateinit var meshEventDao: MeshEventDao
     @Inject lateinit var batteryMonitor: BatteryMonitor
     @Inject lateinit var adaptiveScanStrategy: AdaptiveScanStrategy
-    @Inject lateinit var localDeviceId: String
+    @Inject @Named("deviceId") lateinit var localDeviceId: String
 
     private var wakeLock: PowerManager.WakeLock? = null
     private var retryJob: Job? = null
+    private var meshStarted = false
 
     // ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -68,10 +70,13 @@ class MeshForegroundService : LifecycleService() {
         when (intent?.action) {
             ACTION_STOP -> stopSelf()
             else -> {
-                launchMesh()
-                launchLogCollector()
-                launchRetryWorker()
-                launchNotificationUpdater()
+                if (!meshStarted) {
+                    meshStarted = true
+                    launchMesh()
+                    launchLogCollector()
+                    launchRetryWorker()
+                    launchNotificationUpdater()
+                }
             }
         }
 

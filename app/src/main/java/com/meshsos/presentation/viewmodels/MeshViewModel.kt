@@ -25,6 +25,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import javax.inject.Inject
+import javax.inject.Named
 
 @HiltViewModel
 class MeshViewModel @Inject constructor(
@@ -36,7 +37,7 @@ class MeshViewModel @Inject constructor(
     private val adaptiveScanStrategy: AdaptiveScanStrategy,
     private val meshEventDao: MeshEventDao,
     private val pendingPacketDao: PendingPacketDao,
-    val localDeviceId: String
+    @Named("deviceId") val localDeviceId: String
 ) : ViewModel() {
 
     // ── Exposed state ─────────────────────────────────────────────────────────
@@ -50,6 +51,10 @@ class MeshViewModel @Inject constructor(
 
     val recentEvents: StateFlow<List<MeshEventEntity>> =
         meshEventDao.getRecentFlow(50)
+            .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
+
+    val allEvents: StateFlow<List<MeshEventEntity>> =
+        meshEventDao.getAllFlow()
             .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 
     val pendingPacketCount: StateFlow<Int> =
@@ -98,6 +103,12 @@ class MeshViewModel @Inject constructor(
 
     fun dismissError() {
         _sendError.value = null
+    }
+
+    fun clearLogs() {
+        viewModelScope.launch {
+            meshEventDao.deleteAll()
+        }
     }
 
     // ── Peer count polling ────────────────────────────────────────────────────

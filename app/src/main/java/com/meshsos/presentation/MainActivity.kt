@@ -5,10 +5,13 @@ import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.List
 import androidx.compose.material.icons.filled.Warning
@@ -24,7 +27,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.core.view.WindowCompat
 import com.meshsos.background.MeshForegroundService
+import com.meshsos.presentation.screens.DebugConsoleScreen
 import com.meshsos.presentation.screens.MeshStatusScreen
 import com.meshsos.presentation.screens.RelayLogScreen
 import com.meshsos.presentation.screens.SosScreen
@@ -41,14 +46,19 @@ class MainActivity : ComponentActivity() {
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
-    ) { permissions ->
-        val allGranted = permissions.values.all { it }
-        if (allGranted) {
-            MeshForegroundService.start(this)
-        }
+    ) { _ ->
+        // Start service regardless — it will work with whatever permissions are granted
+        // Nearby Connections handles permission errors gracefully at runtime
+        viewModel.startService()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        // Force dark appearance for system bars
+        enableEdgeToEdge()
+        WindowCompat.getInsetsController(window, window.decorView).apply {
+            isAppearanceLightStatusBars = false
+            isAppearanceLightNavigationBars = false
+        }
         super.onCreate(savedInstanceState)
         requestRequiredPermissions()
 
@@ -98,13 +108,29 @@ class MainActivity : ComponentActivity() {
                                     indicatorColor = Color(0xFF2A2A2A)
                                 )
                             )
+                            NavigationBarItem(
+                                selected = selectedTab == 3,
+                                onClick = { selectedTab = 3 },
+                                icon = { Icon(Icons.Default.Build, contentDescription = "Debug") },
+                                label = { Text("Debug") },
+                                colors = NavigationBarItemDefaults.colors(
+                                    selectedIconColor = MeshTeal,
+                                    selectedTextColor = MeshTeal,
+                                    unselectedIconColor = SubtleGray,
+                                    unselectedTextColor = SubtleGray,
+                                    indicatorColor = Color(0xFF2A2A2A)
+                                )
+                            )
                         }
                     }
                 ) { padding ->
-                    when (selectedTab) {
-                        0 -> SosScreen(viewModel = viewModel)
-                        1 -> RelayLogScreen(viewModel = viewModel)
-                        2 -> MeshStatusScreen(viewModel = viewModel)
+                    Box(modifier = Modifier.padding(padding)) {
+                        when (selectedTab) {
+                            0 -> SosScreen(viewModel = viewModel)
+                            1 -> RelayLogScreen(viewModel = viewModel)
+                            2 -> MeshStatusScreen(viewModel = viewModel)
+                            3 -> DebugConsoleScreen(viewModel = viewModel)
+                        }
                     }
                 }
             }

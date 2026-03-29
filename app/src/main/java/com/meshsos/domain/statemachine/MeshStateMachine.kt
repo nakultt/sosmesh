@@ -1,7 +1,7 @@
 package com.meshsos.domain.statemachine
 
 import android.util.Log
-import com.meshsos.domain.model.MeshEvent
+import com.meshsos.domain.model.MeshEvent as MeshLogEvent
 import com.meshsos.domain.model.MeshEventType
 import com.meshsos.domain.model.SosPacket
 import com.meshsos.domain.service.DeduplicationService
@@ -16,6 +16,7 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import javax.inject.Inject
+import javax.inject.Named
 import javax.inject.Singleton
 
 private const val TAG = "MeshStateMachine"
@@ -25,13 +26,13 @@ class MeshStateMachine @Inject constructor(
     private val deduplicationService: DeduplicationService,
     private val relayPacketUseCase: RelayPacketUseCase,
     private val uploadPacketUseCase: UploadPacketUseCase,
-    private val deviceId: String
+    @Named("deviceId") private val deviceId: String
 ) {
     private val _state = MutableStateFlow<MeshState>(MeshState.Idle)
     val state: StateFlow<MeshState> = _state.asStateFlow()
 
-    private val _events = MutableSharedFlow<MeshEvent>(extraBufferCapacity = 32)
-    val events: SharedFlow<MeshEvent> = _events.asSharedFlow()
+    private val _events = MutableSharedFlow<MeshLogEvent>(extraBufferCapacity = 32)
+    val events: SharedFlow<MeshLogEvent> = _events.asSharedFlow()
 
     // ── Public event emission ─────────────────────────────────────────────────
 
@@ -143,8 +144,8 @@ class MeshStateMachine @Inject constructor(
 
     // ── Event log ─────────────────────────────────────────────────────────────
 
-    private val _logEvents = MutableSharedFlow<MeshEvent>(extraBufferCapacity = 64)
-    val logEvents: SharedFlow<MeshEvent> = _logEvents.asSharedFlow()
+    private val _logEvents = MutableSharedFlow<MeshLogEvent>(extraBufferCapacity = 64)
+    val logEvents: SharedFlow<MeshLogEvent> = _logEvents.asSharedFlow()
 
     private fun emitLog(
         type: MeshEventType,
@@ -152,7 +153,7 @@ class MeshStateMachine @Inject constructor(
         packetId: String? = null,
         deviceId: String? = null
     ) {
-        val event = MeshEvent(
+        val event = MeshLogEvent(
             type = type,
             message = message,
             packetId = packetId,

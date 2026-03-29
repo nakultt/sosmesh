@@ -100,12 +100,4 @@ object AppModule {
     fun provideDataStore(@ApplicationContext context: Context): DataStore<Preferences> =
         context.dataStore
 
-    // ── Use case string params ────────────────────────────────────────────────
-    // These @Named bindings resolve ambiguous String parameters in use cases
-
-    @Provides
-    @Singleton
-    fun provideLocalDeviceId(
-        @Named("deviceId") deviceId: String
-    ): String = deviceId  // Used where plain String @Inject is needed
 }

@@ -17,7 +17,6 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.Divider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
@@ -61,7 +60,7 @@ fun MeshStatusScreen(viewModel: MeshViewModel) {
     ) {
         Text(
             "Mesh Status",
-            color = Color.White,
+            color = MaterialTheme.colorScheme.onBackground,
             fontSize = 18.sp,
             fontWeight = FontWeight.Bold
         )
@@ -74,7 +73,7 @@ fun MeshStatusScreen(viewModel: MeshViewModel) {
                 value = if (transportName.contains("Nearby")) "WiFi Direct + BLE" else "Pure BLE",
                 valueColor = if (transportName.contains("Nearby")) SafeGreen else WarnAmber
             )
-            InfoRow(label = "Peers Connected", value = "$peerCount", valueColor = Color.White)
+            InfoRow(label = "Peers Connected", value = "$peerCount", valueColor = MaterialTheme.colorScheme.onBackground)
             InfoRow(
                 label = "Pending Queue",
                 value = if (pendingCount == 0) "Clear" else "$pendingCount packet(s)",
@@ -95,7 +94,7 @@ fun MeshStatusScreen(viewModel: MeshViewModel) {
                 is MeshState.Relay -> {
                     val relay = meshState as MeshState.Relay
                     InfoRow("Packet ID", relay.packet.id.take(8) + "…", SubtleGray)
-                    InfoRow("Hops", "${relay.packet.metadata.currentHops}/${relay.packet.metadata.maxHops}", Color.White)
+                    InfoRow("Hops", "${relay.packet.metadata.currentHops}/${relay.packet.metadata.maxHops}", MaterialTheme.colorScheme.onBackground)
                     InfoRow("From Device", relay.receivedFromDevice.take(8), SubtleGray)
                 }
                 is MeshState.Originator -> {
@@ -159,7 +158,7 @@ fun MeshStatusScreen(viewModel: MeshViewModel) {
                     modifier = Modifier.weight(1f),
                     colors = ButtonDefaults.buttonColors(containerColor = SosRed)
                 ) {
-                    Text("Stop Service", color = Color.White, fontWeight = FontWeight.Bold)
+                    Text("Stop Service", color = MaterialTheme.colorScheme.onBackground, fontWeight = FontWeight.Bold)
                 }
             }
         }
@@ -209,7 +208,7 @@ fun SettingsRow(
         verticalAlignment = Alignment.CenterVertically
     ) {
         Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
-            Text(label, color = Color.White, fontSize = 13.sp)
+            Text(label, color = MaterialTheme.colorScheme.onBackground, fontSize = 13.sp)
             Text(description, color = SubtleGray, fontSize = 11.sp)
         }
         Switch(

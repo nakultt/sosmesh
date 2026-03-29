@@ -12,6 +12,7 @@ import com.meshsos.domain.model.SosPacket
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.time.Instant
 import javax.inject.Inject
+import javax.inject.Named
 import javax.inject.Singleton
 
 @Singleton
@@ -19,8 +20,8 @@ class UploadPacketUseCase @Inject constructor(
     @ApplicationContext private val context: Context,
     private val apiServiceFactory: SosApiServiceFactory,
     private val pendingPacketDao: PendingPacketDao,
-    private val serverBaseUrl: String,
-    private val localDeviceId: String
+    @Named("serverBaseUrl") private val serverBaseUrl: String,
+    @Named("deviceId") private val localDeviceId: String
 ) {
     private val api by lazy { apiServiceFactory.create(serverBaseUrl) }
 
