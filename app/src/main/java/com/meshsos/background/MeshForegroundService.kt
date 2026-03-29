@@ -164,6 +164,7 @@ class MeshForegroundService : LifecycleService() {
                 stateMachine.setForwardCallback { packet ->
                     lifecycleScope.launch(Dispatchers.IO) {
                         transportManager.broadcastPacket(packet)
+                        stateMachine.updatePeersReached(transportManager.connectedPeerCount())
                     }
                 }
             } catch (e: Exception) {

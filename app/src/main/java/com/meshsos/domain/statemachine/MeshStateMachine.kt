@@ -68,6 +68,13 @@ class MeshStateMachine @Inject constructor(
         emitLog(MeshEventType.PEER_DISCONNECTED, "Peer disconnected: $deviceId", deviceId = deviceId)
     }
 
+    fun updatePeersReached(count: Int) {
+        val current = _state.value
+        if (current is MeshState.Originator) {
+            _state.value = current.copy(peersReached = count)
+        }
+    }
+
     fun reset() {
         _state.value = MeshState.Idle
     }

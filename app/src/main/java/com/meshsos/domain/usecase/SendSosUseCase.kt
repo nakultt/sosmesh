@@ -71,7 +71,9 @@ class SendSosUseCase @Inject constructor(
 
         // 5. Broadcast to connected peers immediately
         val result = transportManager.broadcastPacket(packet)
-        Log.d(TAG, "Broadcast result: $result peers=${transportManager.connectedPeerCount()}")
+        val peerCount = transportManager.connectedPeerCount()
+        stateMachine.updatePeersReached(peerCount)
+        Log.d(TAG, "Broadcast result: $result peers=$peerCount")
 
         return Result.success(packet)
     }
