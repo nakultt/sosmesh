@@ -53,7 +53,7 @@ object AppModule {
     @Provides
     @Singleton
     @Named("serverBaseUrl")
-    fun provideServerBaseUrl(): String = "https://your-sos-server.com/"
+    fun provideServerBaseUrl(): String = "https://sosmesh.onrender.com/"
 
     // ── Database ──────────────────────────────────────────────────────────────
 

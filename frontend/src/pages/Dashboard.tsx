@@ -103,7 +103,7 @@ export default function Dashboard() {
             <strong>Connection Error:</strong> {error}
             <p className="text-xs text-text-muted mt-1">
               Make sure the backend is running on{" "}
-              {import.meta.env.VITE_API_URL || "http://localhost:8000"}
+              {import.meta.env.VITE_API_URL || "https://sosmesh.onrender.com"}
             </p>
           </div>
         )}
