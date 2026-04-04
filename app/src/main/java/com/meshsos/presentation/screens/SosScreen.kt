@@ -52,6 +52,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.meshsos.domain.model.IncidentCategory
+import com.meshsos.domain.model.SosPacket
 import com.meshsos.domain.model.Severity
 import com.meshsos.domain.statemachine.MeshState
 import com.meshsos.presentation.theme.SafeGreen
@@ -62,6 +63,7 @@ import com.meshsos.presentation.theme.WarnAmber
 import com.meshsos.presentation.viewmodels.MeshViewModel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import java.util.Locale
 
 @Composable
 fun SosScreen(viewModel: MeshViewModel) {
@@ -356,6 +358,27 @@ fun StateCard(meshState: MeshState, onReset: () -> Unit) {
                     color = SubtleGray,
                     fontSize = 13.sp
                 )
+                val receivedPacket = meshState.receivedPacketForDisplay()
+                if (receivedPacket != null) {
+                    Spacer(Modifier.height(10.dp))
+                    Text(
+                        text = "Received SOS Details",
+                        color = WarnAmber,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    StateDetailRow("Type", receivedPacket.type.name)
+                    StateDetailRow(
+                        "Emergency",
+                        "${receivedPacket.incident.category.displayName()} / ${receivedPacket.incident.severity.name}"
+                    )
+                    StateDetailRow(
+                        "Message",
+                        receivedPacket.incident.message.ifBlank { "No additional message shared." }
+                    )
+                    StateDetailRow("Location", receivedPacket.locationSummary())
+                }
                 if (meshState is MeshState.Confirmed || meshState is MeshState.Error) {
                     Spacer(Modifier.height(8.dp))
                     TextButton(onClick = onReset) {
@@ -368,6 +391,20 @@ fun StateCard(meshState: MeshState, onReset: () -> Unit) {
 }
 
 // ── Extension helpers ─────────────────────────────────────────────────────────
+
+@Composable
+private fun StateDetailRow(label: String, value: String) {
+    Column(modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
+        Text(label, color = SubtleGray, fontSize = 12.sp)
+        Text(
+            value,
+            color = MaterialTheme.colorScheme.onBackground,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Medium,
+            textAlign = TextAlign.Start
+        )
+    }
+}
 
 fun MeshState.title(): String = when (this) {
     is MeshState.Idle -> "Listening"
@@ -397,6 +434,19 @@ fun MeshState.titleColor(): Color = when (this) {
     is MeshState.Uploading, is MeshState.AwaitingAck -> WarnAmber
     else -> MaterialTheme.colorScheme.onBackground
 }
+
+private fun MeshState.receivedPacketForDisplay(): SosPacket? = when (this) {
+    is MeshState.Relay -> packet
+    is MeshState.Uploading -> packet
+    is MeshState.AwaitingAck -> packet
+    else -> null
+}
+
+private fun SosPacket.locationSummary(): String =
+    incident.location?.let {
+        val coords = String.format(Locale.US, "%.5f, %.5f", it.lat, it.lng)
+        if (it.address.isNotBlank()) "$coords (${it.address})" else coords
+    } ?: "Not available"
 
 fun IncidentCategory.displayName(): String = when (this) {
     IncidentCategory.MEDICAL -> "Medical Emergency"

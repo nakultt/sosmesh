@@ -34,6 +34,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.meshsos.domain.model.SosPacket
 import com.meshsos.domain.statemachine.MeshState
 import com.meshsos.presentation.theme.MeshTeal
 import com.meshsos.presentation.theme.SafeGreen
@@ -41,6 +42,7 @@ import com.meshsos.presentation.theme.SosRed
 import com.meshsos.presentation.theme.SubtleGray
 import com.meshsos.presentation.theme.WarnAmber
 import com.meshsos.presentation.viewmodels.MeshViewModel
+import java.util.Locale
 
 @Composable
 fun MeshStatusScreen(viewModel: MeshViewModel) {
@@ -48,6 +50,7 @@ fun MeshStatusScreen(viewModel: MeshViewModel) {
     val peerCount by viewModel.peerCount.collectAsState()
     val transportName by viewModel.activeTransportName.collectAsState()
     val pendingCount by viewModel.pendingPacketCount.collectAsState()
+    val receivedSosDetails = meshState.receivedSosDetails()
 
     var autoRelayEnabled by remember { mutableStateOf(true) }
 
@@ -93,13 +96,28 @@ fun MeshStatusScreen(viewModel: MeshViewModel) {
             when (meshState) {
                 is MeshState.Relay -> {
                     val relay = meshState as MeshState.Relay
-                    InfoRow("Packet ID", relay.packet.id.take(8) + "…", SubtleGray)
+                    InfoRow("Packet ID", relay.packet.id.shortId(), SubtleGray)
                     InfoRow("Hops", "${relay.packet.metadata.currentHops}/${relay.packet.metadata.maxHops}", MaterialTheme.colorScheme.onBackground)
-                    InfoRow("From Device", relay.receivedFromDevice.take(8), SubtleGray)
+                    InfoRow("From Device", relay.receivedFromDevice.shortId(), SubtleGray)
+                }
+                is MeshState.Uploading -> {
+                    val uploading = meshState as MeshState.Uploading
+                    InfoRow("Packet ID", uploading.packet.id.shortId(), SubtleGray)
+                    InfoRow("Hops", "${uploading.packet.metadata.currentHops}/${uploading.packet.metadata.maxHops}", MaterialTheme.colorScheme.onBackground)
+                    uploading.receivedFromDevice?.let { InfoRow("From Device", it.shortId(), SubtleGray) }
+                }
+                is MeshState.AwaitingAck -> {
+                    val awaiting = meshState as MeshState.AwaitingAck
+                    InfoRow("Alert ID", awaiting.alertId, SafeGreen)
+                    awaiting.packet?.let {
+                        InfoRow("Packet ID", it.id.shortId(), SubtleGray)
+                        InfoRow("Hops", "${it.metadata.currentHops}/${it.metadata.maxHops}", MaterialTheme.colorScheme.onBackground)
+                    }
+                    awaiting.receivedFromDevice?.let { InfoRow("From Device", it.shortId(), SubtleGray) }
                 }
                 is MeshState.Originator -> {
                     val orig = meshState as MeshState.Originator
-                    InfoRow("Packet ID", orig.packet.id.take(8) + "…", SubtleGray)
+                    InfoRow("Packet ID", orig.packet.id.shortId(), SubtleGray)
                     InfoRow("Peers Reached", "${orig.peersReached}", SafeGreen)
                 }
                 is MeshState.Confirmed -> {
@@ -108,6 +126,13 @@ fun MeshStatusScreen(viewModel: MeshViewModel) {
                     InfoRow("Responders", "${conf.ack.respondersNotified}", SafeGreen)
                 }
                 else -> {}
+            }
+        }
+
+        if (receivedSosDetails != null) {
+            Spacer(Modifier.height(12.dp))
+            SectionCard(title = "Received SOS Data") {
+                ReceivedSosDataContent(details = receivedSosDetails)
             }
         }
 
@@ -221,6 +246,60 @@ fun SettingsRow(
         )
     }
 }
+
+private data class ReceivedSosDetails(
+    val packet: SosPacket,
+    val receivedFromDevice: String?
+)
+
+private fun MeshState.receivedSosDetails(): ReceivedSosDetails? = when (this) {
+    is MeshState.Relay -> ReceivedSosDetails(packet = packet, receivedFromDevice = receivedFromDevice)
+    is MeshState.Uploading -> ReceivedSosDetails(packet = packet, receivedFromDevice = receivedFromDevice)
+    is MeshState.AwaitingAck -> packet?.let { ReceivedSosDetails(packet = it, receivedFromDevice = receivedFromDevice) }
+    else -> null
+}
+
+@Composable
+private fun ReceivedSosDataContent(details: ReceivedSosDetails) {
+    val packet = details.packet
+    val incident = packet.incident
+    val location = incident.location
+
+    InfoRow("Type", packet.type.name, WarnAmber)
+    InfoRow("Emergency", "${incident.category.displayName()} / ${incident.severity.name}", MaterialTheme.colorScheme.onBackground)
+    InfoRow("Sender ID", packet.senderId.shortId(), SubtleGray)
+    details.receivedFromDevice?.let { InfoRow("Received From", it.shortId(), SubtleGray) }
+
+    Spacer(Modifier.height(4.dp))
+    Text("Message", color = SubtleGray, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+    Text(
+        text = incident.message.ifBlank { "No additional message shared." },
+        color = MaterialTheme.colorScheme.onBackground,
+        fontSize = 13.sp,
+        fontWeight = FontWeight.Medium
+    )
+
+    Spacer(Modifier.height(8.dp))
+    if (location != null) {
+        InfoRow("Latitude", String.format(Locale.US, "%.6f", location.lat), MaterialTheme.colorScheme.onBackground)
+        InfoRow("Longitude", String.format(Locale.US, "%.6f", location.lng), MaterialTheme.colorScheme.onBackground)
+        InfoRow("Accuracy", String.format(Locale.US, "%.1f m", location.accuracy), MaterialTheme.colorScheme.onBackground)
+        if (location.address.isNotBlank()) {
+            Spacer(Modifier.height(4.dp))
+            Text("Address", color = SubtleGray, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+            Text(
+                text = location.address,
+                color = MaterialTheme.colorScheme.onBackground,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Medium
+            )
+        }
+    } else {
+        Text("Location: Not available", color = SubtleGray, fontSize = 12.sp)
+    }
+}
+
+private fun String.shortId(): String = if (length <= 8) this else take(8) + "..."
 
 fun MeshState.stateColor(): Color = when (this) {
     is MeshState.Idle -> SubtleGray

@@ -24,13 +24,16 @@ sealed class MeshState {
     /** Relay node has internet — currently uploading to server */
     data class Uploading(
         val packet: SosPacket,
-        val attemptNumber: Int = 1
+        val attemptNumber: Int = 1,
+        val receivedFromDevice: String? = null
     ) : MeshState()
 
     /** Upload succeeded — ACK sent back along route, waiting for originator ACK */
     data class AwaitingAck(
         val originalPacketId: String,
-        val alertId: String
+        val alertId: String,
+        val packet: SosPacket? = null,
+        val receivedFromDevice: String? = null
     ) : MeshState()
 
     /** Originator received ACK — SOS confirmed delivered */

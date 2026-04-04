@@ -15,6 +15,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import java.util.Locale
 import javax.inject.Inject
 import javax.inject.Named
 import javax.inject.Singleton
@@ -108,17 +109,40 @@ class MeshStateMachine @Inject constructor(
         // 4. Update state to relay
         val incrementedPacket = packet.incrementHop(deviceId)
         _state.value = MeshState.Relay(incrementedPacket, fromDevice)
-        emitLog(MeshEventType.SOS_RECEIVED, "SOS received from $fromDevice hop=${incrementedPacket.metadata.currentHops}", packet.id)
+        val incident = incrementedPacket.incident
+        val messagePreview = incident.message.ifBlank { "No message" }
+        val locationSummary = incident.location?.let {
+            String.format(
+                Locale.US,
+                "%.6f, %.6f (+/- %.1fm)",
+                it.lat,
+                it.lng,
+                it.accuracy
+            )
+        } ?: "Location unavailable"
+        emitLog(
+            MeshEventType.SOS_RECEIVED,
+            "SOS received from $fromDevice | type=${incrementedPacket.type.name} | emergency=${incident.category.name}/${incident.severity.name} | message=$messagePreview | location=$locationSummary | hop=${incrementedPacket.metadata.currentHops}",
+            packet.id
+        )
 
         // 5. Check internet — try upload first, relay in parallel
         val hasInternet = uploadPacketUseCase.hasInternet()
         if (hasInternet) {
-            _state.value = MeshState.Uploading(incrementedPacket)
+            _state.value = MeshState.Uploading(
+                packet = incrementedPacket,
+                receivedFromDevice = fromDevice
+            )
             val result = uploadPacketUseCase.upload(incrementedPacket)
             result.fold(
                 onSuccess = { response ->
                     val uploaded = incrementedPacket.markUploaded()
-                    _state.value = MeshState.AwaitingAck(uploaded.id, response.alertId)
+                    _state.value = MeshState.AwaitingAck(
+                        originalPacketId = uploaded.id,
+                        alertId = response.alertId,
+                        packet = uploaded,
+                        receivedFromDevice = fromDevice
+                    )
                     emitLog(MeshEventType.PACKET_UPLOADED, "Uploaded. alertId=${response.alertId}", uploaded.id)
                 },
                 onFailure = { error ->
