@@ -60,6 +60,7 @@ class UploadResponse(BaseModel):
     alertId: str
     respondersNotified: int = 0
     estimatedArrival: str = ""
+    deduplicated: bool = False
 
 
 # ── Alert (stored in MongoDB) ─────────────────────────────────────────────────
@@ -78,6 +79,11 @@ class Alert(BaseModel):
     batteryLevel: int = 100
     relayDeviceId: str
     relayLocation: Optional[LocationInfo] = None
+    dedupeKey: str
+    relayDeviceIds: list[str] = []
+    uploadAttempts: int = 1
+    lastRelayDeviceId: str
+    lastReceivedAt: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
     status: str = "ACTIVE"  # ACTIVE, RESPONDING, RESOLVED
     createdAt: int  # epoch seconds from device
     receivedAt: str = Field(default_factory=lambda: datetime.utcnow().isoformat())

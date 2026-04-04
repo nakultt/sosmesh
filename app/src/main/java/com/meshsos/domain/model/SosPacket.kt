@@ -96,6 +96,8 @@ data class AckPacket(
     fun toBytes(): ByteArray = Gson().toJson(this).toByteArray(Charsets.UTF_8)
 
     companion object {
+        const val LOCAL_HELP_ALERT_PREFIX = "LOCAL_HELP:"
+
         fun fromBytes(bytes: ByteArray): AckPacket? = try {
             Gson().fromJson(String(bytes, Charsets.UTF_8), AckPacket::class.java)
         } catch (e: Exception) {
@@ -103,6 +105,8 @@ data class AckPacket(
         }
     }
 }
+
+fun AckPacket.isLocalHelpUpdate(): Boolean = alertId.startsWith(AckPacket.LOCAL_HELP_ALERT_PREFIX)
 
 // ── Mesh event (for log screen) ───────────────────────────────────────────────
 

@@ -8,8 +8,11 @@ import com.meshsos.data.db.dao.MeshEventDao
 import com.meshsos.data.db.dao.PendingPacketDao
 import com.meshsos.data.db.entity.MeshEventEntity
 import com.meshsos.data.transport.TransportManager
+import com.meshsos.domain.model.AckPacket
 import com.meshsos.domain.model.IncidentCategory
+import com.meshsos.domain.model.MeshEventType
 import com.meshsos.domain.model.Severity
+import com.meshsos.domain.model.SosPacket
 import com.meshsos.domain.service.AdaptiveScanStrategy
 import com.meshsos.domain.service.BatteryMonitor
 import com.meshsos.domain.service.PowerMode
@@ -24,6 +27,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import java.time.Instant
 import javax.inject.Inject
 import javax.inject.Named
 
@@ -69,6 +73,7 @@ class MeshViewModel @Inject constructor(
 
     private val _peerCount = MutableStateFlow(0)
     val peerCount: StateFlow<Int> = _peerCount.asStateFlow()
+    private var lastLocalHelpUpdatePacketId: String? = null
 
     val batteryLevel get() = batteryMonitor.getBatteryLevel()
 
@@ -99,6 +104,7 @@ class MeshViewModel @Inject constructor(
 
     fun resetState() {
         stateMachine.reset()
+        lastLocalHelpUpdatePacketId = null
     }
 
     fun dismissError() {
@@ -108,6 +114,46 @@ class MeshViewModel @Inject constructor(
     fun clearLogs() {
         viewModelScope.launch {
             meshEventDao.deleteAll()
+        }
+    }
+
+    fun canSendLocalHelpUpdate(): Boolean = receivedPacketContext(meshState.value) != null
+
+    fun sendLocalHelpUpdate(etaMinutes: Int = 8) {
+        viewModelScope.launch {
+            val context = receivedPacketContext(meshState.value)
+            if (context == null) {
+                _sendError.value = "No received SOS available for local-help update."
+                return@launch
+            }
+            if (lastLocalHelpUpdatePacketId == context.packet.id) {
+                _sendError.value = "Local-help update already sent for this SOS."
+                return@launch
+            }
+
+            val ack = AckPacket(
+                originalPacketId = context.packet.id,
+                alertId = "${AckPacket.LOCAL_HELP_ALERT_PREFIX}$localDeviceId",
+                uploadedBy = localDeviceId,
+                respondersNotified = 1,
+                estimatedArrival = "ETA ~${etaMinutes} min"
+            )
+
+            val result = transportManager.sendAck(ack, context.replyToDeviceId)
+            result.onSuccess {
+                lastLocalHelpUpdatePacketId = context.packet.id
+                meshEventDao.insert(
+                    MeshEventEntity(
+                        timestamp = Instant.now().epochSecond,
+                        eventType = MeshEventType.ACK_RECEIVED.name,
+                        message = "Local-help update sent for packet ${context.packet.id.take(8)}... (${ack.estimatedArrival})",
+                        packetId = context.packet.id,
+                        deviceId = localDeviceId
+                    )
+                )
+            }.onFailure {
+                _sendError.value = "Failed to send local-help update: ${it.message ?: "unknown error"}"
+            }
         }
     }
 
@@ -128,5 +174,21 @@ class MeshViewModel @Inject constructor(
                 kotlinx.coroutines.delay(interval.coerceAtMost(5_000)) // poll UI max every 5s
             }
         }
+    }
+
+    private data class ReceivedPacketContext(
+        val packet: SosPacket,
+        val replyToDeviceId: String
+    )
+
+    private fun receivedPacketContext(state: MeshState): ReceivedPacketContext? = when (state) {
+        is MeshState.Relay -> ReceivedPacketContext(state.packet, state.receivedFromDevice)
+        is MeshState.Uploading -> state.receivedFromDevice?.let { ReceivedPacketContext(state.packet, it) }
+        is MeshState.AwaitingAck -> {
+            val packet = state.packet
+            val fromDevice = state.receivedFromDevice
+            if (packet != null && fromDevice != null) ReceivedPacketContext(packet, fromDevice) else null
+        }
+        else -> null
     }
 }

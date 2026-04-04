@@ -24,7 +24,8 @@ data class UploadResponse(
     val success: Boolean,
     val alertId: String,
     val respondersNotified: Int = 0,
-    val estimatedArrival: String = ""
+    val estimatedArrival: String = "",
+    val deduplicated: Boolean = false
 )
 
 // ── Retrofit interface ────────────────────────────────────────────────────────

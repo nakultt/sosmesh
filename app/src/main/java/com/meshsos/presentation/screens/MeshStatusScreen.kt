@@ -21,6 +21,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -51,6 +52,7 @@ fun MeshStatusScreen(viewModel: MeshViewModel) {
     val transportName by viewModel.activeTransportName.collectAsState()
     val pendingCount by viewModel.pendingPacketCount.collectAsState()
     val receivedSosDetails = meshState.receivedSosDetails()
+    val canSendLocalHelpUpdate = viewModel.canSendLocalHelpUpdate()
 
     var autoRelayEnabled by remember { mutableStateOf(true) }
 
@@ -119,10 +121,17 @@ fun MeshStatusScreen(viewModel: MeshViewModel) {
                     val orig = meshState as MeshState.Originator
                     InfoRow("Packet ID", orig.packet.id.shortId(), SubtleGray)
                     InfoRow("Peers Reached", "${orig.peersReached}", SafeGreen)
+                    InfoRow("Server Upload", "Pending confirmation", WarnAmber)
+                    InfoRow(
+                        "Helpers En Route",
+                        "${orig.localHelpUpdates.size}",
+                        if (orig.localHelpUpdates.isNotEmpty()) SafeGreen else SubtleGray
+                    )
                 }
                 is MeshState.Confirmed -> {
                     val conf = meshState as MeshState.Confirmed
                     InfoRow("Alert ID", conf.ack.alertId, SafeGreen)
+                    InfoRow("Server Upload", "Confirmed", SafeGreen)
                     InfoRow("Responders", "${conf.ack.respondersNotified}", SafeGreen)
                 }
                 else -> {}
@@ -133,6 +142,12 @@ fun MeshStatusScreen(viewModel: MeshViewModel) {
             Spacer(Modifier.height(12.dp))
             SectionCard(title = "Received SOS Data") {
                 ReceivedSosDataContent(details = receivedSosDetails)
+                if (canSendLocalHelpUpdate) {
+                    Spacer(Modifier.height(6.dp))
+                    TextButton(onClick = { viewModel.sendLocalHelpUpdate() }) {
+                        Text("I am Arriving to Help", color = SafeGreen, fontWeight = FontWeight.Bold)
+                    }
+                }
             }
         }
 

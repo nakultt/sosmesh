@@ -107,7 +107,12 @@ fun SosScreen(viewModel: MeshViewModel) {
             Spacer(Modifier.height(32.dp))
 
             // ── State feedback ────────────────────────────────────────────────
-            StateCard(meshState = meshState, onReset = { viewModel.resetState() })
+            StateCard(
+                meshState = meshState,
+                onReset = { viewModel.resetState() },
+                canSendLocalHelpUpdate = viewModel.canSendLocalHelpUpdate(),
+                onSendLocalHelpUpdate = { viewModel.sendLocalHelpUpdate() }
+            )
 
             Spacer(Modifier.height(32.dp))
 
@@ -331,7 +336,12 @@ fun StatusBar(
 // ── State feedback card ───────────────────────────────────────────────────────
 
 @Composable
-fun StateCard(meshState: MeshState, onReset: () -> Unit) {
+fun StateCard(
+    meshState: MeshState,
+    onReset: () -> Unit,
+    canSendLocalHelpUpdate: Boolean,
+    onSendLocalHelpUpdate: () -> Unit
+) {
     AnimatedVisibility(visible = meshState !is MeshState.Idle) {
         Card(
             modifier = Modifier.fillMaxWidth(),
@@ -358,6 +368,14 @@ fun StateCard(meshState: MeshState, onReset: () -> Unit) {
                     color = SubtleGray,
                     fontSize = 13.sp
                 )
+                if (meshState is MeshState.Originator) {
+                    Spacer(Modifier.height(6.dp))
+                    StateDetailRow("Server Status", "Pending confirmation")
+                }
+                if (meshState is MeshState.Confirmed) {
+                    Spacer(Modifier.height(6.dp))
+                    StateDetailRow("Server Status", "Uploaded and acknowledged")
+                }
                 val receivedPacket = meshState.receivedPacketForDisplay()
                 if (receivedPacket != null) {
                     Spacer(Modifier.height(10.dp))
@@ -378,6 +396,30 @@ fun StateCard(meshState: MeshState, onReset: () -> Unit) {
                         receivedPacket.incident.message.ifBlank { "No additional message shared." }
                     )
                     StateDetailRow("Location", receivedPacket.locationSummary())
+                    if (canSendLocalHelpUpdate) {
+                        Spacer(Modifier.height(6.dp))
+                        TextButton(onClick = onSendLocalHelpUpdate) {
+                            Text("I am Arriving to Help", color = SafeGreen, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+
+                val originatorState = meshState as? MeshState.Originator
+                if (originatorState != null && originatorState.localHelpUpdates.isNotEmpty()) {
+                    Spacer(Modifier.height(10.dp))
+                    Text(
+                        text = "Nearby Helpers On The Way",
+                        color = SafeGreen,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    originatorState.localHelpUpdates.take(3).forEach { update ->
+                        StateDetailRow(
+                            label = update.helperDeviceId.shortDeviceId(),
+                            value = update.eta
+                        )
+                    }
                 }
                 if (meshState is MeshState.Confirmed || meshState is MeshState.Error) {
                     Spacer(Modifier.height(8.dp))
@@ -447,6 +489,8 @@ private fun SosPacket.locationSummary(): String =
         val coords = String.format(Locale.US, "%.5f, %.5f", it.lat, it.lng)
         if (it.address.isNotBlank()) "$coords (${it.address})" else coords
     } ?: "Not available"
+
+private fun String.shortDeviceId(): String = if (length <= 8) this else take(8) + "..."
 
 fun IncidentCategory.displayName(): String = when (this) {
     IncidentCategory.MEDICAL -> "Medical Emergency"

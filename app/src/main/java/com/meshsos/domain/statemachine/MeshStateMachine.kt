@@ -1,9 +1,11 @@
 package com.meshsos.domain.statemachine
 
 import android.util.Log
+import com.meshsos.domain.model.AckPacket
 import com.meshsos.domain.model.MeshEvent as MeshLogEvent
 import com.meshsos.domain.model.MeshEventType
 import com.meshsos.domain.model.SosPacket
+import com.meshsos.domain.model.isLocalHelpUpdate
 import com.meshsos.domain.service.DeduplicationService
 import com.meshsos.domain.usecase.RelayPacketUseCase
 import com.meshsos.domain.usecase.UploadPacketUseCase
@@ -15,6 +17,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import java.util.concurrent.ConcurrentHashMap
 import java.util.Locale
 import javax.inject.Inject
 import javax.inject.Named
@@ -34,6 +37,7 @@ class MeshStateMachine @Inject constructor(
 
     private val _events = MutableSharedFlow<MeshLogEvent>(extraBufferCapacity = 32)
     val events: SharedFlow<MeshLogEvent> = _events.asSharedFlow()
+    private val ackBackRouteByPacketId = ConcurrentHashMap<String, String>()
 
     // ── Public event emission ─────────────────────────────────────────────────
 
@@ -48,11 +52,87 @@ class MeshStateMachine @Inject constructor(
         }
     }
 
-    fun onAckReceived(ack: com.meshsos.domain.model.AckPacket) {
+    fun onAckReceived(ack: AckPacket) {
         val current = _state.value
         if (current is MeshState.Originator && current.packet.id == ack.originalPacketId) {
-            _state.value = MeshState.Confirmed(ack)
-            emitLog(MeshEventType.ACK_RECEIVED, "ACK confirmed: alertId=${ack.alertId}", ack.originalPacketId)
+            if (ack.isLocalHelpUpdate()) {
+                val helperId = ack.uploadedBy.ifBlank { "unknown-helper" }
+                val eta = ack.estimatedArrival.ifBlank { "ETA not shared" }
+                val update = LocalHelpUpdate(
+                    helperDeviceId = helperId,
+                    eta = eta
+                )
+                _state.value = current.copy(
+                    localHelpUpdates = (listOf(update) + current.localHelpUpdates).distinctBy {
+                        "${it.helperDeviceId}|${it.eta}"
+                    }.take(10)
+                )
+                emitLog(
+                    MeshEventType.ACK_RECEIVED,
+                    "Local helper update: $helperId is arriving ($eta)",
+                    ack.originalPacketId,
+                    helperId
+                )
+            } else {
+                _state.value = MeshState.Confirmed(ack)
+                emitLog(MeshEventType.ACK_RECEIVED, "ACK confirmed: alertId=${ack.alertId}", ack.originalPacketId)
+            }
+            return
+        }
+
+        if (!ack.isLocalHelpUpdate()) {
+            when (current) {
+                is MeshState.Relay -> {
+                    if (current.packet.id == ack.originalPacketId) {
+                        _state.value = MeshState.AwaitingAck(
+                            originalPacketId = ack.originalPacketId,
+                            alertId = ack.alertId,
+                            packet = current.packet,
+                            receivedFromDevice = current.receivedFromDevice
+                        )
+                        emitLog(
+                            MeshEventType.ACK_RECEIVED,
+                            "Server upload confirmed for packet ${ack.originalPacketId.take(8)}",
+                            ack.originalPacketId,
+                            ack.uploadedBy
+                        )
+                    }
+                }
+                is MeshState.Uploading -> {
+                    if (current.packet.id == ack.originalPacketId) {
+                        _state.value = MeshState.AwaitingAck(
+                            originalPacketId = ack.originalPacketId,
+                            alertId = ack.alertId,
+                            packet = current.packet,
+                            receivedFromDevice = current.receivedFromDevice
+                        )
+                        emitLog(
+                            MeshEventType.ACK_RECEIVED,
+                            "Server upload confirmed for packet ${ack.originalPacketId.take(8)}",
+                            ack.originalPacketId,
+                            ack.uploadedBy
+                        )
+                    }
+                }
+                is MeshState.AwaitingAck -> {
+                    if (current.originalPacketId == ack.originalPacketId) {
+                        _state.value = current.copy(alertId = ack.alertId)
+                    }
+                }
+                else -> {}
+            }
+        }
+
+        // Relay ACK/local-help updates back toward the originator hop-by-hop
+        val previousHop = ackBackRouteByPacketId[ack.originalPacketId]
+        if (previousHop != null) {
+            scope_forwardAck(ack, previousHop)
+            emitLog(
+                MeshEventType.ACK_RECEIVED,
+                "Forwarded update for packet ${ack.originalPacketId.take(8)} to $previousHop",
+                ack.originalPacketId,
+                previousHop
+            )
         }
     }
 
@@ -78,6 +158,7 @@ class MeshStateMachine @Inject constructor(
 
     fun reset() {
         _state.value = MeshState.Idle
+        ackBackRouteByPacketId.clear()
     }
 
     // ── Internal processing ───────────────────────────────────────────────────
@@ -108,6 +189,7 @@ class MeshStateMachine @Inject constructor(
 
         // 4. Update state to relay
         val incrementedPacket = packet.incrementHop(deviceId)
+        ackBackRouteByPacketId[packet.id] = fromDevice
         _state.value = MeshState.Relay(incrementedPacket, fromDevice)
         val incident = incrementedPacket.incident
         val messagePreview = incident.message.ifBlank { "No message" }
@@ -143,7 +225,16 @@ class MeshStateMachine @Inject constructor(
                         packet = uploaded,
                         receivedFromDevice = fromDevice
                     )
-                    emitLog(MeshEventType.PACKET_UPLOADED, "Uploaded. alertId=${response.alertId}", uploaded.id)
+                    val uploadSource = if (response.deduplicated) "already uploaded (deduped)" else "uploaded now"
+                    emitLog(MeshEventType.PACKET_UPLOADED, "Server $uploadSource. alertId=${response.alertId}", uploaded.id)
+                    val serverAck = AckPacket(
+                        originalPacketId = uploaded.id,
+                        alertId = response.alertId,
+                        uploadedBy = deviceId,
+                        respondersNotified = response.respondersNotified,
+                        estimatedArrival = response.estimatedArrival
+                    )
+                    scope_forwardAck(serverAck, fromDevice)
                 },
                 onFailure = { error ->
                     Log.e(TAG, "Upload failed: ${error.message}")
@@ -164,13 +255,22 @@ class MeshStateMachine @Inject constructor(
 
     // Called externally from transport layer
     private var forwardCallback: ((SosPacket) -> Unit)? = null
+    private var ackForwardCallback: ((AckPacket, String) -> Unit)? = null
 
     fun setForwardCallback(cb: (SosPacket) -> Unit) {
         forwardCallback = cb
     }
 
+    fun setAckForwardCallback(cb: (AckPacket, String) -> Unit) {
+        ackForwardCallback = cb
+    }
+
     private fun scope_forward(packet: SosPacket) {
         forwardCallback?.invoke(packet)
+    }
+
+    private fun scope_forwardAck(ack: AckPacket, toDeviceId: String) {
+        ackForwardCallback?.invoke(ack, toDeviceId)
     }
 
     // ── Event log ─────────────────────────────────────────────────────────────

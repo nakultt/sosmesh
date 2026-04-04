@@ -2,6 +2,7 @@ package com.meshsos.domain.statemachine
 
 import com.meshsos.domain.model.AckPacket
 import com.meshsos.domain.model.SosPacket
+import java.time.Instant
 
 // ── States ────────────────────────────────────────────────────────────────────
 
@@ -12,7 +13,8 @@ sealed class MeshState {
     /** This device originated the SOS — scanning + advertising, waiting for relay/ack */
     data class Originator(
         val packet: SosPacket,
-        val peersReached: Int = 0
+        val peersReached: Int = 0,
+        val localHelpUpdates: List<LocalHelpUpdate> = emptyList()
     ) : MeshState()
 
     /** This device received someone else's SOS and is relaying it */
@@ -47,6 +49,12 @@ sealed class MeshState {
         val recoverable: Boolean = true
     ) : MeshState()
 }
+
+data class LocalHelpUpdate(
+    val helperDeviceId: String,
+    val eta: String,
+    val timestamp: Long = Instant.now().epochSecond
+)
 
 // ── Events that drive state transitions ───────────────────────────────────────
 

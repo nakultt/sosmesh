@@ -167,6 +167,11 @@ class MeshForegroundService : LifecycleService() {
                         stateMachine.updatePeersReached(transportManager.connectedPeerCount())
                     }
                 }
+                stateMachine.setAckForwardCallback { ack, toDeviceId ->
+                    lifecycleScope.launch(Dispatchers.IO) {
+                        transportManager.sendAck(ack, toDeviceId)
+                    }
+                }
             } catch (e: Exception) {
                 Log.e(TAG, "Mesh crash: ${e.message}", e)
                 meshEventDao.insert(
