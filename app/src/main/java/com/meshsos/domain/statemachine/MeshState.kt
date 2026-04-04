@@ -1,6 +1,8 @@
 package com.meshsos.domain.statemachine
 
 import com.meshsos.domain.model.AckPacket
+import com.meshsos.domain.model.HelperStatus
+import com.meshsos.domain.model.LocationInfo
 import com.meshsos.domain.model.SosPacket
 import java.time.Instant
 
@@ -40,7 +42,9 @@ sealed class MeshState {
 
     /** Originator received ACK — SOS confirmed delivered */
     data class Confirmed(
-        val ack: AckPacket
+        val ack: AckPacket,
+        val packet: SosPacket? = null,
+        val localHelpUpdates: List<LocalHelpUpdate> = emptyList()
     ) : MeshState()
 
     /** Something went wrong */
@@ -53,6 +57,8 @@ sealed class MeshState {
 data class LocalHelpUpdate(
     val helperDeviceId: String,
     val eta: String,
+    val status: HelperStatus = HelperStatus.ACCEPTED,
+    val location: LocationInfo? = null,
     val timestamp: Long = Instant.now().epochSecond
 )
 

@@ -3,6 +3,7 @@ package com.meshsos.presentation.screens
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -10,13 +11,14 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.weight
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
@@ -25,7 +27,6 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.SnackbarHost
@@ -46,14 +47,19 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Offset
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.meshsos.domain.model.HelperStatus
 import com.meshsos.domain.model.IncidentCategory
+import com.meshsos.domain.model.LocationInfo
 import com.meshsos.domain.model.SosPacket
 import com.meshsos.domain.model.Severity
+import com.meshsos.domain.statemachine.LocalHelpUpdate
 import com.meshsos.domain.statemachine.MeshState
 import com.meshsos.presentation.theme.SafeGreen
 import com.meshsos.presentation.theme.SosRed
@@ -63,6 +69,7 @@ import com.meshsos.presentation.theme.WarnAmber
 import com.meshsos.presentation.viewmodels.MeshViewModel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlin.math.absoluteValue
 import java.util.Locale
 
 @Composable
@@ -73,13 +80,13 @@ fun SosScreen(viewModel: MeshViewModel) {
     val sendError by viewModel.sendError.collectAsState()
     val transportName by viewModel.activeTransportName.collectAsState()
     val pendingCount by viewModel.pendingPacketCount.collectAsState()
+    val activeHelperStatus by viewModel.activeHelperStatus.collectAsState()
 
     var selectedCategory by remember { mutableStateOf(IncidentCategory.MEDICAL) }
     var message by remember { mutableStateOf("") }
     var showCategoryDropdown by remember { mutableStateOf(false) }
 
     val snackbarHostState = remember { SnackbarHostState() }
-    val scope = rememberCoroutineScope()
 
     LaunchedEffect(sendError) {
         sendError?.let {
@@ -111,7 +118,8 @@ fun SosScreen(viewModel: MeshViewModel) {
                 meshState = meshState,
                 onReset = { viewModel.resetState() },
                 canSendLocalHelpUpdate = viewModel.canSendLocalHelpUpdate(),
-                onSendLocalHelpUpdate = { viewModel.sendLocalHelpUpdate() }
+                activeHelperStatus = activeHelperStatus,
+                onHelperStatusUpdate = { viewModel.sendHelperStatusUpdate(it) }
             )
 
             Spacer(Modifier.height(32.dp))
@@ -230,7 +238,6 @@ fun SosButton(
                     onPress = {
                         isHolding = true
                         progress = 0f
-                        var held = false
                         // Tick progress over 2 seconds
                         scope.launch {
                             repeat(40) {
@@ -239,7 +246,6 @@ fun SosButton(
                                 delay(50)
                             }
                             if (isHolding) {
-                                held = true
                                 onSos()
                             }
                         }
@@ -340,7 +346,8 @@ fun StateCard(
     meshState: MeshState,
     onReset: () -> Unit,
     canSendLocalHelpUpdate: Boolean,
-    onSendLocalHelpUpdate: () -> Unit
+    activeHelperStatus: HelperStatus?,
+    onHelperStatusUpdate: (HelperStatus) -> Unit
 ) {
     AnimatedVisibility(visible = meshState !is MeshState.Idle) {
         Card(
@@ -398,26 +405,43 @@ fun StateCard(
                     StateDetailRow("Location", receivedPacket.locationSummary())
                     if (canSendLocalHelpUpdate) {
                         Spacer(Modifier.height(6.dp))
-                        TextButton(onClick = onSendLocalHelpUpdate) {
-                            Text("I am Arriving to Help", color = SafeGreen, fontWeight = FontWeight.Bold)
-                        }
+                        HelperWorkflowActions(
+                            activeStatus = activeHelperStatus,
+                            onStatusUpdate = onHelperStatusUpdate
+                        )
                     }
                 }
 
-                val originatorState = meshState as? MeshState.Originator
-                if (originatorState != null && originatorState.localHelpUpdates.isNotEmpty()) {
+                val victimUpdates = meshState.victimLocalHelpUpdates()
+                if (victimUpdates.isNotEmpty()) {
                     Spacer(Modifier.height(10.dp))
                     Text(
-                        text = "Nearby Helpers On The Way",
+                        text = "Nearby Helper Updates",
                         color = SafeGreen,
                         fontSize = 12.sp,
                         fontWeight = FontWeight.Bold
                     )
                     Spacer(Modifier.height(4.dp))
-                    originatorState.localHelpUpdates.take(3).forEach { update ->
+                    victimUpdates.latestByHelper().forEach { update ->
                         StateDetailRow(
                             label = update.helperDeviceId.shortDeviceId(),
-                            value = update.eta
+                            value = "${update.status.displayName()} • ${update.eta}"
+                        )
+                    }
+
+                    val victimLocation = meshState.victimPacketForDisplay()?.incident?.location
+                    if (victimLocation != null || victimUpdates.any { it.location != null }) {
+                        Spacer(Modifier.height(10.dp))
+                        Text(
+                            text = "Live Responder Tracking",
+                            color = WarnAmber,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Spacer(Modifier.height(6.dp))
+                        ResponderTrackingMap(
+                            victimLocation = victimLocation,
+                            helperUpdates = victimUpdates
                         )
                     }
                 }
@@ -430,6 +454,186 @@ fun StateCard(
             }
         }
     }
+}
+
+@Composable
+private fun HelperWorkflowActions(
+    activeStatus: HelperStatus?,
+    onStatusUpdate: (HelperStatus) -> Unit
+) {
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Text(
+            text = "Helper Workflow",
+            color = SafeGreen,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Bold
+        )
+        Spacer(Modifier.height(6.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            HelperWorkflowButton(
+                label = "Accept",
+                status = HelperStatus.ACCEPTED,
+                activeStatus = activeStatus,
+                onClick = onStatusUpdate
+            )
+            HelperWorkflowButton(
+                label = "En route",
+                status = HelperStatus.EN_ROUTE,
+                activeStatus = activeStatus,
+                onClick = onStatusUpdate
+            )
+        }
+        Spacer(Modifier.height(8.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            HelperWorkflowButton(
+                label = "Reached",
+                status = HelperStatus.REACHED,
+                activeStatus = activeStatus,
+                onClick = onStatusUpdate
+            )
+            HelperWorkflowButton(
+                label = "Cannot continue",
+                status = HelperStatus.CANNOT_CONTINUE,
+                activeStatus = activeStatus,
+                onClick = onStatusUpdate
+            )
+        }
+    }
+}
+
+@Composable
+private fun RowScope.HelperWorkflowButton(
+    label: String,
+    status: HelperStatus,
+    activeStatus: HelperStatus?,
+    onClick: (HelperStatus) -> Unit
+) {
+    val selected = activeStatus == status
+    val accent = when (status) {
+        HelperStatus.ACCEPTED -> SafeGreen
+        HelperStatus.EN_ROUTE -> WarnAmber
+        HelperStatus.REACHED -> SafeGreen
+        HelperStatus.CANNOT_CONTINUE -> SosRed
+    }
+    Button(
+        onClick = { onClick(status) },
+        modifier = Modifier.weight(1f),
+        colors = ButtonDefaults.buttonColors(
+            containerColor = if (selected) accent else accent.copy(alpha = 0.22f),
+            contentColor = if (selected) Color.Black else MaterialTheme.colorScheme.onBackground
+        )
+    ) {
+        Text(
+            text = label,
+            fontSize = 12.sp,
+            fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+            textAlign = TextAlign.Center
+        )
+    }
+}
+
+@Composable
+private fun ResponderTrackingMap(
+    victimLocation: LocationInfo?,
+    helperUpdates: List<LocalHelpUpdate>
+) {
+    val helperTrails = helperUpdates
+        .filter { it.location != null }
+        .groupBy { it.helperDeviceId }
+        .mapValues { (_, updates) -> updates.sortedBy { it.timestamp } }
+
+    if (victimLocation == null && helperTrails.isEmpty()) {
+        Text("Live locations are not available yet.", color = SubtleGray, fontSize = 12.sp)
+        return
+    }
+
+    val allPoints = buildList {
+        if (victimLocation != null) add(victimLocation)
+        helperTrails.values.forEach { trail ->
+            trail.forEach { update ->
+                update.location?.let { add(it) }
+            }
+        }
+    }
+
+    val minLat = allPoints.minOf { it.lat }
+    val maxLat = allPoints.maxOf { it.lat }
+    val minLng = allPoints.minOf { it.lng }
+    val maxLng = allPoints.maxOf { it.lng }
+
+    val latSpan = (maxLat - minLat).coerceAtLeast(0.0005)
+    val lngSpan = (maxLng - minLng).coerceAtLeast(0.0005)
+    val latPad = latSpan * 0.15
+    val lngPad = lngSpan * 0.15
+
+    fun project(sizeWidth: Float, sizeHeight: Float, location: LocationInfo): Offset {
+        val xRatio = ((location.lng - (minLng - lngPad)) / (lngSpan + 2 * lngPad)).toFloat()
+        val yRatio = ((location.lat - (minLat - latPad)) / (latSpan + 2 * latPad)).toFloat()
+        return Offset(
+            x = xRatio.coerceIn(0f, 1f) * sizeWidth,
+            y = (1f - yRatio.coerceIn(0f, 1f)) * sizeHeight
+        )
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(190.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.45f))
+            .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.4f), RoundedCornerShape(10.dp))
+    ) {
+        Canvas(modifier = Modifier.fillMaxSize().padding(10.dp)) {
+            helperTrails.forEach { (helperId, trail) ->
+                val points = trail.mapNotNull { it.location?.let { location -> project(size.width, size.height, location) } }
+                val baseColor = helperColor(helperId)
+                for (i in 0 until points.lastIndex) {
+                    drawLine(
+                        color = baseColor.copy(alpha = 0.55f),
+                        start = points[i],
+                        end = points[i + 1],
+                        strokeWidth = 4f
+                    )
+                }
+                val latestPoint = points.lastOrNull()
+                val latestStatus = trail.lastOrNull()?.status
+                if (latestPoint != null) {
+                    val markerColor = when (latestStatus) {
+                        HelperStatus.CANNOT_CONTINUE -> SubtleGray
+                        HelperStatus.REACHED -> SafeGreen
+                        HelperStatus.EN_ROUTE -> WarnAmber
+                        else -> baseColor
+                    }
+                    drawCircle(color = markerColor, radius = 8f, center = latestPoint)
+                    drawCircle(
+                        color = Color.Black.copy(alpha = 0.2f),
+                        radius = 12f,
+                        center = latestPoint,
+                        style = Stroke(width = 2f)
+                    )
+                }
+            }
+
+            if (victimLocation != null) {
+                val victimPoint = project(size.width, size.height, victimLocation)
+                drawCircle(color = SosRed, radius = 10f, center = victimPoint)
+                drawCircle(color = Color.White, radius = 4f, center = victimPoint)
+            }
+        }
+    }
+
+    Spacer(Modifier.height(6.dp))
+    Text(
+        text = "Red: victim location • Colored trails: helper movement",
+        color = SubtleGray,
+        fontSize = 11.sp
+    )
 }
 
 // ── Extension helpers ─────────────────────────────────────────────────────────
@@ -484,6 +688,25 @@ private fun MeshState.receivedPacketForDisplay(): SosPacket? = when (this) {
     else -> null
 }
 
+private fun MeshState.victimPacketForDisplay(): SosPacket? = when (this) {
+    is MeshState.Originator -> packet
+    is MeshState.Confirmed -> packet
+    else -> null
+}
+
+private fun MeshState.victimLocalHelpUpdates(): List<LocalHelpUpdate> = when (this) {
+    is MeshState.Originator -> localHelpUpdates
+    is MeshState.Confirmed -> localHelpUpdates
+    else -> emptyList()
+}
+
+private fun List<LocalHelpUpdate>.latestByHelper(limit: Int = 4): List<LocalHelpUpdate> =
+    groupBy { it.helperDeviceId }
+        .values
+        .mapNotNull { updates -> updates.maxByOrNull { it.timestamp } }
+        .sortedByDescending { it.timestamp }
+        .take(limit)
+
 private fun SosPacket.locationSummary(): String =
     incident.location?.let {
         val coords = String.format(Locale.US, "%.5f, %.5f", it.lat, it.lng)
@@ -491,6 +714,25 @@ private fun SosPacket.locationSummary(): String =
     } ?: "Not available"
 
 private fun String.shortDeviceId(): String = if (length <= 8) this else take(8) + "..."
+
+private fun HelperStatus.displayName(): String = when (this) {
+    HelperStatus.ACCEPTED -> "Accepted"
+    HelperStatus.EN_ROUTE -> "En route"
+    HelperStatus.REACHED -> "Reached"
+    HelperStatus.CANNOT_CONTINUE -> "Cannot continue"
+}
+
+private val helperPalette = listOf(
+    Color(0xFF22C55E),
+    Color(0xFF38BDF8),
+    Color(0xFFF59E0B),
+    Color(0xFFFB7185),
+    Color(0xFFA78BFA),
+    Color(0xFF2DD4BF)
+)
+
+private fun helperColor(helperId: String): Color =
+    helperPalette[helperId.hashCode().absoluteValue % helperPalette.size]
 
 fun IncidentCategory.displayName(): String = when (this) {
     IncidentCategory.MEDICAL -> "Medical Emergency"

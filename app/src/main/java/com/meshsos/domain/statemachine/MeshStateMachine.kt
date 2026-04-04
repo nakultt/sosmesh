@@ -2,6 +2,7 @@ package com.meshsos.domain.statemachine
 
 import android.util.Log
 import com.meshsos.domain.model.AckPacket
+import com.meshsos.domain.model.HelperStatus
 import com.meshsos.domain.model.MeshEvent as MeshLogEvent
 import com.meshsos.domain.model.MeshEventType
 import com.meshsos.domain.model.SosPacket
@@ -18,6 +19,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import java.time.Instant
 import java.util.concurrent.ConcurrentHashMap
 import java.util.Locale
 import javax.inject.Inject
@@ -25,6 +27,7 @@ import javax.inject.Named
 import javax.inject.Singleton
 
 private const val TAG = "MeshStateMachine"
+private const val MAX_LOCAL_HELP_UPDATES = 120
 
 @Singleton
 class MeshStateMachine @Inject constructor(
@@ -56,34 +59,64 @@ class MeshStateMachine @Inject constructor(
 
     fun onAckReceived(ack: AckPacket) {
         val current = _state.value
-        if (current is MeshState.Originator && current.packet.id == ack.originalPacketId) {
-            if (ack.isLocalHelpUpdate()) {
-                val helperId = ack.uploadedBy.ifBlank { "unknown-helper" }
-                val eta = ack.estimatedArrival.ifBlank { "ETA not shared" }
-                val update = LocalHelpUpdate(
-                    helperDeviceId = helperId,
-                    eta = eta
-                )
-                _state.value = current.copy(
-                    localHelpUpdates = (listOf(update) + current.localHelpUpdates).distinctBy {
-                        "${it.helperDeviceId}|${it.eta}"
-                    }.take(10)
-                )
+        if (ack.isLocalHelpUpdate()) {
+            val update = ack.toLocalHelpUpdate()
+            val handledAtVictim = when (current) {
+                is MeshState.Originator -> {
+                    if (current.packet.id != ack.originalPacketId) {
+                        false
+                    } else {
+                        _state.value = current.copy(
+                            localHelpUpdates = mergeLocalHelpUpdates(current.localHelpUpdates, update)
+                        )
+                        true
+                    }
+                }
+                is MeshState.Confirmed -> {
+                    if (current.ack.originalPacketId != ack.originalPacketId) {
+                        false
+                    } else {
+                        _state.value = current.copy(
+                            localHelpUpdates = mergeLocalHelpUpdates(current.localHelpUpdates, update)
+                        )
+                        true
+                    }
+                }
+                else -> false
+            }
+
+            if (handledAtVictim) {
                 emitLog(
                     MeshEventType.ACK_RECEIVED,
-                    "Local helper update: $helperId is arriving ($eta)",
+                    "Helper ${update.helperDeviceId} is ${update.status.displayName()} (${update.eta})",
                     ack.originalPacketId,
-                    helperId
+                    update.helperDeviceId
                 )
-            } else {
-                _state.value = MeshState.Confirmed(ack)
-                emitLog(MeshEventType.ACK_RECEIVED, "ACK confirmed: alertId=${ack.alertId}", ack.originalPacketId)
+                return
             }
-            return
-        }
-
-        if (!ack.isLocalHelpUpdate()) {
+        } else {
             when (current) {
+                is MeshState.Originator -> {
+                    if (current.packet.id == ack.originalPacketId) {
+                        _state.value = MeshState.Confirmed(
+                            ack = ack,
+                            packet = current.packet,
+                            localHelpUpdates = current.localHelpUpdates
+                        )
+                        emitLog(
+                            MeshEventType.ACK_RECEIVED,
+                            "ACK confirmed: alertId=${ack.alertId}",
+                            ack.originalPacketId
+                        )
+                        return
+                    }
+                }
+                is MeshState.Confirmed -> {
+                    if (current.ack.originalPacketId == ack.originalPacketId) {
+                        _state.value = current.copy(ack = ack)
+                        return
+                    }
+                }
                 is MeshState.Relay -> {
                     if (current.packet.id == ack.originalPacketId) {
                         _state.value = MeshState.AwaitingAck(
@@ -277,6 +310,47 @@ class MeshStateMachine @Inject constructor(
 
     private fun scope_forwardAck(ack: AckPacket, toDeviceId: String) {
         ackForwardCallback?.invoke(ack, toDeviceId)
+    }
+
+    private fun AckPacket.toLocalHelpUpdate(): LocalHelpUpdate {
+        val helperId = uploadedBy.ifBlank {
+            alertId.removePrefix(AckPacket.LOCAL_HELP_ALERT_PREFIX).ifBlank { "unknown-helper" }
+        }
+        val status = helperStatus ?: HelperStatus.ACCEPTED
+        val etaText = estimatedArrival.ifBlank {
+            when (status) {
+                HelperStatus.ACCEPTED -> "Accepted"
+                HelperStatus.EN_ROUTE -> "En route"
+                HelperStatus.REACHED -> "Reached"
+                HelperStatus.CANNOT_CONTINUE -> "Cannot continue"
+            }
+        }
+        return LocalHelpUpdate(
+            helperDeviceId = helperId,
+            eta = etaText,
+            status = status,
+            location = helperLocation,
+            timestamp = helperTimestamp ?: Instant.now().epochSecond
+        )
+    }
+
+    private fun mergeLocalHelpUpdates(
+        existing: List<LocalHelpUpdate>,
+        incoming: LocalHelpUpdate
+    ): List<LocalHelpUpdate> {
+        val filtered = existing.filterNot {
+            it.helperDeviceId == incoming.helperDeviceId && it.timestamp == incoming.timestamp
+        }
+        return (listOf(incoming) + filtered)
+            .sortedByDescending { it.timestamp }
+            .take(MAX_LOCAL_HELP_UPDATES)
+    }
+
+    private fun HelperStatus.displayName(): String = when (this) {
+        HelperStatus.ACCEPTED -> "accepted"
+        HelperStatus.EN_ROUTE -> "en route"
+        HelperStatus.REACHED -> "reached"
+        HelperStatus.CANNOT_CONTINUE -> "cannot continue"
     }
 
     // ── Event log ─────────────────────────────────────────────────────────────

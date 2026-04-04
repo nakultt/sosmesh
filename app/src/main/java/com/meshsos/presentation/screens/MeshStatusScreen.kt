@@ -5,11 +5,13 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.weight
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -35,6 +37,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.meshsos.domain.model.HelperStatus
 import com.meshsos.domain.model.SosPacket
 import com.meshsos.domain.statemachine.MeshState
 import com.meshsos.presentation.theme.MeshTeal
@@ -53,6 +56,7 @@ fun MeshStatusScreen(viewModel: MeshViewModel) {
     val pendingCount by viewModel.pendingPacketCount.collectAsState()
     val receivedSosDetails = meshState.receivedSosDetails()
     val canSendLocalHelpUpdate = viewModel.canSendLocalHelpUpdate()
+    val activeHelperStatus by viewModel.activeHelperStatus.collectAsState()
 
     var autoRelayEnabled by remember { mutableStateOf(true) }
 
@@ -124,7 +128,7 @@ fun MeshStatusScreen(viewModel: MeshViewModel) {
                     InfoRow("Server Upload", "Pending confirmation", WarnAmber)
                     InfoRow(
                         "Helpers En Route",
-                        "${orig.localHelpUpdates.size}",
+                        "${orig.localHelpUpdates.groupBy { it.helperDeviceId }.size}",
                         if (orig.localHelpUpdates.isNotEmpty()) SafeGreen else SubtleGray
                     )
                 }
@@ -133,6 +137,11 @@ fun MeshStatusScreen(viewModel: MeshViewModel) {
                     InfoRow("Alert ID", conf.ack.alertId, SafeGreen)
                     InfoRow("Server Upload", "Confirmed", SafeGreen)
                     InfoRow("Responders", "${conf.ack.respondersNotified}", SafeGreen)
+                    InfoRow(
+                        "Helpers Reporting",
+                        "${conf.localHelpUpdates.groupBy { it.helperDeviceId }.size}",
+                        if (conf.localHelpUpdates.isNotEmpty()) SafeGreen else SubtleGray
+                    )
                 }
                 else -> {}
             }
@@ -144,9 +153,10 @@ fun MeshStatusScreen(viewModel: MeshViewModel) {
                 ReceivedSosDataContent(details = receivedSosDetails)
                 if (canSendLocalHelpUpdate) {
                     Spacer(Modifier.height(6.dp))
-                    TextButton(onClick = { viewModel.sendLocalHelpUpdate() }) {
-                        Text("I am Arriving to Help", color = SafeGreen, fontWeight = FontWeight.Bold)
-                    }
+                    HelperStatusActionGrid(
+                        activeStatus = activeHelperStatus,
+                        onStatusUpdate = { viewModel.sendHelperStatusUpdate(it) }
+                    )
                 }
             }
         }
@@ -259,6 +269,83 @@ fun SettingsRow(
                 checkedTrackColor = SafeGreen
             )
         )
+    }
+}
+
+@Composable
+private fun HelperStatusActionGrid(
+    activeStatus: HelperStatus?,
+    onStatusUpdate: (HelperStatus) -> Unit
+) {
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Text(
+            "Helper workflow",
+            color = SafeGreen,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Bold
+        )
+        Spacer(Modifier.height(8.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            HelperStatusButton(
+                text = "Accept",
+                status = HelperStatus.ACCEPTED,
+                activeStatus = activeStatus,
+                onStatusUpdate = onStatusUpdate
+            )
+            HelperStatusButton(
+                text = "En route",
+                status = HelperStatus.EN_ROUTE,
+                activeStatus = activeStatus,
+                onStatusUpdate = onStatusUpdate
+            )
+        }
+        Spacer(Modifier.height(8.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            HelperStatusButton(
+                text = "Reached",
+                status = HelperStatus.REACHED,
+                activeStatus = activeStatus,
+                onStatusUpdate = onStatusUpdate
+            )
+            HelperStatusButton(
+                text = "Cannot continue",
+                status = HelperStatus.CANNOT_CONTINUE,
+                activeStatus = activeStatus,
+                onStatusUpdate = onStatusUpdate
+            )
+        }
+    }
+}
+
+@Composable
+private fun RowScope.HelperStatusButton(
+    text: String,
+    status: HelperStatus,
+    activeStatus: HelperStatus?,
+    onStatusUpdate: (HelperStatus) -> Unit
+) {
+    val selected = activeStatus == status
+    val tint = when (status) {
+        HelperStatus.ACCEPTED -> SafeGreen
+        HelperStatus.EN_ROUTE -> WarnAmber
+        HelperStatus.REACHED -> SafeGreen
+        HelperStatus.CANNOT_CONTINUE -> SosRed
+    }
+    TextButton(
+        onClick = { onStatusUpdate(status) },
+        modifier = Modifier.weight(1f),
+        colors = ButtonDefaults.textButtonColors(
+            containerColor = if (selected) tint.copy(alpha = 0.25f) else Color.Transparent,
+            contentColor = tint
+        )
+    ) {
+        Text(text, fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium, fontSize = 12.sp)
     }
 }
 

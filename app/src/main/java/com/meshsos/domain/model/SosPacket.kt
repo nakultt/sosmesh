@@ -14,6 +14,8 @@ enum class Severity { CRITICAL, HIGH, MEDIUM }
 
 enum class IncidentCategory { MEDICAL, FIRE, VIOLENCE, NATURAL_DISASTER, OTHER }
 
+enum class HelperStatus { ACCEPTED, EN_ROUTE, REACHED, CANNOT_CONTINUE }
+
 // ── Core packet sent across the mesh ─────────────────────────────────────────
 
 data class SosPacket(
@@ -112,7 +114,10 @@ data class AckPacket(
     val alertId: String,
     val uploadedBy: String,
     val respondersNotified: Int = 0,
-    val estimatedArrival: String = ""
+    val estimatedArrival: String = "",
+    val helperStatus: HelperStatus? = null,
+    val helperLocation: LocationInfo? = null,
+    val helperTimestamp: Long? = null
 ) {
     fun toBytes(): ByteArray = Gson().toJson(this).toByteArray(Charsets.UTF_8)
 
