@@ -4,6 +4,8 @@ import com.google.gson.Gson
 import java.time.Instant
 import java.util.UUID
 
+private const val MAX_ROUTE_POINTS = 20
+
 // ── Packet types ──────────────────────────────────────────────────────────────
 
 enum class PacketType { SOS, ACK, PING }
@@ -35,12 +37,25 @@ data class SosPacket(
 
     fun isHopLimitReached(): Boolean = metadata.currentHops >= metadata.maxHops
 
-    fun incrementHop(relayDeviceId: String): SosPacket = copy(
-        metadata = metadata.copy(
-            currentHops = metadata.currentHops + 1,
-            route = metadata.route + relayDeviceId
+    fun incrementHop(
+        relayDeviceId: String,
+        relayLocation: LocationInfo? = null,
+        hopTimestamp: Long = Instant.now().epochSecond
+    ): SosPacket {
+        val routeLimit = (metadata.maxHops + 1).coerceIn(2, MAX_ROUTE_POINTS)
+        val updatedRoute = (metadata.route + RoutePoint(
+            deviceId = relayDeviceId,
+            location = relayLocation,
+            timestamp = hopTimestamp
+        )).takeLast(routeLimit)
+
+        return copy(
+            metadata = metadata.copy(
+                currentHops = metadata.currentHops + 1,
+                route = updatedRoute
+            )
         )
-    )
+    }
 
     fun markUploaded(): SosPacket = copy(
         uploaded = true,
@@ -73,12 +88,18 @@ data class LocationInfo(
     val address: String = ""
 )
 
+data class RoutePoint(
+    val deviceId: String,
+    val location: LocationInfo? = null,
+    val timestamp: Long = Instant.now().epochSecond
+)
+
 data class PacketMetadata(
     val createdAt: Long = Instant.now().epochSecond,
     val ttl: Int = 3600,              // seconds
     val maxHops: Int = 10,
     val currentHops: Int = 0,
-    val route: List<String> = emptyList(),
+    val route: List<RoutePoint> = emptyList(),
     val batteryLevel: Int = 100
 )
 

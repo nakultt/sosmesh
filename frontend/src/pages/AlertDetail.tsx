@@ -251,6 +251,8 @@ export default function AlertDetail() {
             </h2>
             <AlertMap
               location={alert.location}
+              route={alert.route}
+              senderId={alert.senderId}
               relayLocation={alert.relayLocation}
               className="h-64"
             />

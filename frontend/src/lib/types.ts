@@ -7,6 +7,12 @@ export interface LocationInfo {
   address: string;
 }
 
+export interface RoutePoint {
+  deviceId: string;
+  location: LocationInfo | null;
+  timestamp: number;
+}
+
 // ── Alert (from backend) ─────────────────────────────────────────────────────
 
 export interface Alert {
@@ -17,7 +23,7 @@ export interface Alert {
   category: "MEDICAL" | "FIRE" | "VIOLENCE" | "NATURAL_DISASTER" | "OTHER";
   message: string;
   location: LocationInfo | null;
-  route: string[];
+  route: Array<RoutePoint | string>;
   currentHops: number;
   maxHops: number;
   batteryLevel: number;

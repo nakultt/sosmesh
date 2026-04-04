@@ -13,6 +13,7 @@ import com.meshsos.domain.model.IncidentCategory
 import com.meshsos.domain.model.IncidentInfo
 import com.meshsos.domain.model.LocationInfo
 import com.meshsos.domain.model.PacketMetadata
+import com.meshsos.domain.model.RoutePoint
 import com.meshsos.domain.model.Severity
 import com.meshsos.domain.model.SosPacket
 import com.meshsos.domain.service.DeduplicationService
@@ -50,6 +51,7 @@ class SendSosUseCase @Inject constructor(
         val location = withTimeoutOrNull(5_000) { getLastLocation() }
 
         // 2. Build packet
+        val now = java.time.Instant.now().epochSecond
         val packet = SosPacket(
             senderId = localDeviceId,
             incident = IncidentInfo(
@@ -59,6 +61,14 @@ class SendSosUseCase @Inject constructor(
                 location = location
             ),
             metadata = PacketMetadata(
+                createdAt = now,
+                route = listOf(
+                    RoutePoint(
+                        deviceId = localDeviceId,
+                        location = location,
+                        timestamp = now
+                    )
+                ),
                 batteryLevel = batteryMonitor.getBatteryLevel()
             )
         )

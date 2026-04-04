@@ -15,6 +15,7 @@ from app.models import (
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("meshsos-api")
+MAX_SERVER_ROUTE_POINTS = 20
 
 
 # ── Lifespan ───────────────────────────────────────────────────────────────────
@@ -87,6 +88,11 @@ async def receive_sos(request: UploadRequest):
     packet = request.packet
     now_iso = datetime.utcnow().isoformat()
     dedupe_key = build_dedupe_key(packet)
+    safe_route = sanitize_route(
+        route_points=packet.metadata.route,
+        max_hops=packet.metadata.maxHops,
+        default_timestamp=packet.metadata.createdAt,
+    )
 
     logger.info(
         f"SOS received: id={packet.id} sender={packet.senderId} "
@@ -125,7 +131,7 @@ async def receive_sos(request: UploadRequest):
         category=packet.incident.category,
         message=packet.incident.message,
         location=packet.incident.location,
-        route=packet.metadata.route,
+        route=safe_route,
         currentHops=packet.metadata.currentHops,
         maxHops=packet.metadata.maxHops,
         batteryLevel=packet.metadata.batteryLevel,
@@ -318,6 +324,28 @@ async def register_duplicate_upload(db, alert_id: str, relay_device_id: str, now
             },
         }
     )
+
+
+def sanitize_route(route_points, max_hops: int, default_timestamp: int):
+    route_limit = min(max(max_hops + 1, 2), MAX_SERVER_ROUTE_POINTS)
+    if not route_points:
+        return []
+
+    # Keep most recent points and normalize to plain dict for Mongo storage.
+    trimmed = route_points[-route_limit:]
+    normalized = []
+    for point in trimmed:
+        if isinstance(point, str):
+            normalized.append({
+                "deviceId": point,
+                "location": None,
+                "timestamp": default_timestamp,
+            })
+        elif hasattr(point, "model_dump"):
+            normalized.append(point.model_dump())
+        elif isinstance(point, dict):
+            normalized.append(point)
+    return normalized
 
 
 # ── Run ────────────────────────────────────────────────────────────────────────

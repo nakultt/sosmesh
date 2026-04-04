@@ -6,6 +6,7 @@ import com.meshsos.domain.model.MeshEvent as MeshLogEvent
 import com.meshsos.domain.model.MeshEventType
 import com.meshsos.domain.model.SosPacket
 import com.meshsos.domain.model.isLocalHelpUpdate
+import com.meshsos.domain.service.DeviceLocationProvider
 import com.meshsos.domain.service.DeduplicationService
 import com.meshsos.domain.usecase.RelayPacketUseCase
 import com.meshsos.domain.usecase.UploadPacketUseCase
@@ -28,6 +29,7 @@ private const val TAG = "MeshStateMachine"
 @Singleton
 class MeshStateMachine @Inject constructor(
     private val deduplicationService: DeduplicationService,
+    private val deviceLocationProvider: DeviceLocationProvider,
     private val relayPacketUseCase: RelayPacketUseCase,
     private val uploadPacketUseCase: UploadPacketUseCase,
     @Named("deviceId") private val deviceId: String
@@ -188,7 +190,11 @@ class MeshStateMachine @Inject constructor(
         }
 
         // 4. Update state to relay
-        val incrementedPacket = packet.incrementHop(deviceId)
+        val relayLocation = deviceLocationProvider.getCurrentLocation()
+        val incrementedPacket = packet.incrementHop(
+            relayDeviceId = deviceId,
+            relayLocation = relayLocation
+        )
         ackBackRouteByPacketId[packet.id] = fromDevice
         _state.value = MeshState.Relay(incrementedPacket, fromDevice)
         val incident = incrementedPacket.incident

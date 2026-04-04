@@ -1,15 +1,23 @@
 import { useEffect, useRef } from "react";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
-import type { LocationInfo } from "../lib/types";
+import type { LocationInfo, RoutePoint } from "../lib/types";
 
 interface Props {
   location: LocationInfo | null;
+  route?: Array<RoutePoint | string>;
+  senderId?: string;
   relayLocation?: LocationInfo | null;
   className?: string;
 }
 
-export default function AlertMap({ location, relayLocation, className = "" }: Props) {
+export default function AlertMap({
+  location,
+  route = [],
+  senderId,
+  relayLocation,
+  className = "",
+}: Props) {
   const mapRef = useRef<HTMLDivElement>(null);
   const mapInstanceRef = useRef<L.Map | null>(null);
 
@@ -66,8 +74,56 @@ export default function AlertMap({ location, relayLocation, className = "" }: Pr
       weight: 1,
     }).addTo(map);
 
-    // Relay location marker (green)
-    if (relayLocation) {
+    const routePoints = route
+      .map((point) => (typeof point === "string" ? null : point))
+      .filter((point): point is RoutePoint => !!point && !!point.location);
+
+    if (routePoints.length > 0) {
+      const meshPath: [number, number][] = routePoints.map((point) => [
+        point.location!.lat,
+        point.location!.lng,
+      ]);
+
+      // Ensure origin exists as first map point.
+      if (meshPath.length === 0 || meshPath[0][0] !== location.lat || meshPath[0][1] !== location.lng) {
+        meshPath.unshift([location.lat, location.lng]);
+      }
+
+      L.polyline(meshPath, {
+        color: "#58A6FF",
+        weight: 3,
+        opacity: 0.85,
+      }).addTo(map);
+
+      routePoints.forEach((point, index) => {
+        const isOrigin = point.deviceId === senderId || index === 0;
+        const markerColor = isOrigin ? "#F85149" : "#58A6FF";
+        const icon = L.divIcon({
+          html: `<div style="
+            width: 12px; height: 12px;
+            background: ${markerColor};
+            border: 2px solid #fff;
+            border-radius: 50%;
+            box-shadow: 0 0 8px ${isOrigin ? "rgba(248,81,73,0.55)" : "rgba(88,166,255,0.45)"};
+          "></div>`,
+          iconSize: [12, 12],
+          iconAnchor: [6, 6],
+          className: "",
+        });
+
+        L.marker([point.location!.lat, point.location!.lng], { icon })
+          .addTo(map)
+          .bindPopup(
+            `<div style="color:#333;font-family:monospace;font-size:12px">
+              <b>${isOrigin ? "Origin Device" : "Relay Device"}</b><br>
+              ${point.deviceId}<br>
+              ${point.location!.lat.toFixed(6)}, ${point.location!.lng.toFixed(6)}
+            </div>`
+          );
+      });
+
+      map.fitBounds(L.latLngBounds(meshPath), { padding: [40, 40] });
+    } else if (relayLocation) {
       const relayIcon = L.divIcon({
         html: `<div style="
           width: 12px; height: 12px;
@@ -90,7 +146,6 @@ export default function AlertMap({ location, relayLocation, className = "" }: Pr
           </div>`
         );
 
-      // Line between SOS and relay
       L.polyline(
         [
           [location.lat, location.lng],
@@ -99,7 +154,6 @@ export default function AlertMap({ location, relayLocation, className = "" }: Pr
         { color: "#58A6FF", weight: 2, dashArray: "6, 4", opacity: 0.7 }
       ).addTo(map);
 
-      // Fit both markers
       const bounds = L.latLngBounds(
         [location.lat, location.lng],
         [relayLocation.lat, relayLocation.lng]
@@ -117,7 +171,7 @@ export default function AlertMap({ location, relayLocation, className = "" }: Pr
         mapInstanceRef.current = null;
       }
     };
-  }, [location, relayLocation]);
+  }, [location, relayLocation, route, senderId]);
 
   if (!location) {
     return (
