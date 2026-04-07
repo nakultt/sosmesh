@@ -18,8 +18,11 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -28,6 +31,7 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
@@ -45,6 +49,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -60,10 +65,10 @@ import com.meshsos.domain.model.SosPacket
 import com.meshsos.domain.model.Severity
 import com.meshsos.domain.statemachine.LocalHelpUpdate
 import com.meshsos.domain.statemachine.MeshState
+import com.meshsos.presentation.theme.MeshTeal
 import com.meshsos.presentation.theme.SafeGreen
 import com.meshsos.presentation.theme.SosRed
 import com.meshsos.presentation.theme.SosRedDark
-import com.meshsos.presentation.theme.SubtleGray
 import com.meshsos.presentation.theme.WarnAmber
 import com.meshsos.presentation.viewmodels.MeshViewModel
 import kotlinx.coroutines.delay
@@ -97,7 +102,10 @@ fun SosScreen(viewModel: MeshViewModel) {
     Box(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
 
         Column(
-            modifier = Modifier.fillMaxSize().padding(16.dp),
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 20.dp, vertical = 16.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
 
@@ -110,7 +118,7 @@ fun SosScreen(viewModel: MeshViewModel) {
                 batteryLevel = viewModel.batteryLevel
             )
 
-            Spacer(Modifier.height(32.dp))
+            Spacer(Modifier.height(20.dp))
 
             // ── State feedback ────────────────────────────────────────────────
             StateCard(
@@ -121,54 +129,84 @@ fun SosScreen(viewModel: MeshViewModel) {
                 onHelperStatusUpdate = { viewModel.sendHelperStatusUpdate(it) }
             )
 
-            Spacer(Modifier.height(32.dp))
+            Spacer(Modifier.height(20.dp))
 
             // ── Incident type ─────────────────────────────────────────────────
-            Row(
+            Card(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surface
+                ),
+                shape = RoundedCornerShape(16.dp),
+                elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
             ) {
-                Text("Incident Type", color = SubtleGray, fontSize = 13.sp)
-                Box {
-                    TextButton(onClick = { showCategoryDropdown = true }) {
-                        Text(
-                            selectedCategory.displayName(),
-                            color = WarnAmber,
-                            fontWeight = FontWeight.Bold
-                        )
-                        Text("  ▼", color = WarnAmber)
-                    }
-                    DropdownMenu(
-                        expanded = showCategoryDropdown,
-                        onDismissRequest = { showCategoryDropdown = false }
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        IncidentCategory.values().forEach { cat ->
-                            DropdownMenuItem(
-                                text = { Text(cat.displayName()) },
-                                onClick = {
-                                    selectedCategory = cat
-                                    showCategoryDropdown = false
+                        Text(
+                            "Incident Type",
+                            color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f),
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Medium
+                        )
+                        Box {
+                            TextButton(onClick = { showCategoryDropdown = true }) {
+                                Text(
+                                    selectedCategory.displayName(),
+                                    color = WarnAmber,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 14.sp
+                                )
+                                Text("  ▼", color = WarnAmber, fontSize = 12.sp)
+                            }
+                            DropdownMenu(
+                                expanded = showCategoryDropdown,
+                                onDismissRequest = { showCategoryDropdown = false }
+                            ) {
+                                IncidentCategory.values().forEach { cat ->
+                                    DropdownMenuItem(
+                                        text = { Text(cat.displayName()) },
+                                        onClick = {
+                                            selectedCategory = cat
+                                            showCategoryDropdown = false
+                                        }
+                                    )
                                 }
-                            )
+                            }
                         }
                     }
+
+                    Spacer(Modifier.height(8.dp))
+
+                    // ── Optional message ──────────────────────────────────────
+                    OutlinedTextField(
+                        value = message,
+                        onValueChange = { message = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        placeholder = {
+                            Text(
+                                "Optional details (e.g. 2nd floor, blue car)…",
+                                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.35f),
+                                fontSize = 14.sp
+                            )
+                        },
+                        maxLines = 3,
+                        shape = RoundedCornerShape(12.dp),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = MeshTeal,
+                            unfocusedBorderColor = MaterialTheme.colorScheme.outline,
+                            cursorColor = MeshTeal,
+                            focusedTextColor = MaterialTheme.colorScheme.onBackground,
+                            unfocusedTextColor = MaterialTheme.colorScheme.onBackground
+                        )
+                    )
                 }
             }
 
-            Spacer(Modifier.height(8.dp))
-
-            // ── Optional message ──────────────────────────────────────────────
-            OutlinedTextField(
-                value = message,
-                onValueChange = { message = it },
-                modifier = Modifier.fillMaxWidth(),
-                placeholder = { Text("Optional details (e.g. 2nd floor, blue car)…", color = SubtleGray) },
-                maxLines = 3,
-                shape = RoundedCornerShape(12.dp)
-            )
-
-            Spacer(Modifier.weight(1f))
+            Spacer(Modifier.height(32.dp))
 
             // ── SOS button ────────────────────────────────────────────────────
             SosButton(
@@ -186,11 +224,11 @@ fun SosScreen(viewModel: MeshViewModel) {
             Spacer(Modifier.height(12.dp))
             Text(
                 "Hold 2 seconds to send emergency SOS",
-                color = SubtleGray,
+                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.4f),
                 fontSize = 12.sp,
                 textAlign = TextAlign.Center
             )
-            Spacer(Modifier.height(24.dp))
+            Spacer(Modifier.height(32.dp))
         }
 
         SnackbarHost(
@@ -228,16 +266,25 @@ fun SosButton(
         modifier = Modifier
             .size(200.dp)
             .scale(animatedScale)
+            .shadow(
+                elevation = if (isActive) 16.dp else 8.dp,
+                shape = CircleShape,
+                ambientColor = SosRed.copy(alpha = 0.3f),
+                spotColor = SosRed.copy(alpha = 0.3f)
+            )
             .clip(CircleShape)
             .background(buttonColor)
-            .border(4.dp, if (isActive) Color.White else SosRedDark, CircleShape)
+            .border(
+                4.dp,
+                if (isActive) Color.White else SosRed.copy(alpha = 0.6f),
+                CircleShape
+            )
             .pointerInput(enabled) {
                 if (!enabled) return@pointerInput
                 detectTapGestures(
                     onPress = {
                         isHolding = true
                         progress = 0f
-                        // Tick progress over 2 seconds
                         scope.launch {
                             repeat(40) {
                                 if (!isHolding) return@repeat
@@ -287,37 +334,59 @@ fun StatusBar(
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        shape = RoundedCornerShape(12.dp)
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surface
+        ),
+        shape = RoundedCornerShape(16.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
     ) {
         Row(
-            modifier = Modifier.padding(12.dp).fillMaxWidth(),
+            modifier = Modifier.padding(16.dp).fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
             // Transport mode
             val isNearby = transportName.contains("Nearby")
             Column {
-                Text(
-                    if (isNearby) "WiFi Direct + BLE" else "Pure BLE",
-                    color = if (isNearby) SafeGreen else WarnAmber,
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.Bold
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        modifier = Modifier
+                            .size(8.dp)
+                            .clip(CircleShape)
+                            .background(if (peerCount > 0) SafeGreen else WarnAmber)
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        if (isNearby) "WiFi Direct + BLE" else "Pure BLE",
+                        color = if (isNearby) SafeGreen else WarnAmber,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+                Spacer(Modifier.height(4.dp))
                 Text(
                     "$peerCount peer${if (peerCount != 1) "s" else ""} nearby",
-                    color = SubtleGray,
-                    fontSize = 11.sp
+                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f),
+                    fontSize = 12.sp
                 )
             }
 
             // Center: pending queue
             if (pendingCount > 0) {
-                Text(
-                    "$pendingCount queued",
-                    color = WarnAmber,
-                    fontSize = 11.sp
-                )
+                Card(
+                    colors = CardDefaults.cardColors(
+                        containerColor = WarnAmber.copy(alpha = 0.12f)
+                    ),
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Text(
+                        "$pendingCount queued",
+                        color = WarnAmber,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                    )
+                }
             }
 
             // Battery
@@ -329,10 +398,14 @@ fun StatusBar(
                         batteryLevel > 20 -> WarnAmber
                         else -> SosRed
                     },
-                    fontSize = 12.sp,
+                    fontSize = 14.sp,
                     fontWeight = FontWeight.Bold
                 )
-                Text("battery", color = SubtleGray, fontSize = 11.sp)
+                Text(
+                    "battery",
+                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.4f),
+                    fontSize = 11.sp
+                )
             }
         }
     }
@@ -353,45 +426,47 @@ fun StateCard(
             modifier = Modifier.fillMaxWidth(),
             colors = CardDefaults.cardColors(
                 containerColor = when (meshState) {
-                    is MeshState.Confirmed -> SafeGreen.copy(alpha = 0.15f)
-                    is MeshState.Error -> SosRed.copy(alpha = 0.15f)
-                    is MeshState.Uploading, is MeshState.AwaitingAck -> WarnAmber.copy(alpha = 0.1f)
+                    is MeshState.Confirmed -> SafeGreen.copy(alpha = 0.08f)
+                    is MeshState.Error -> SosRed.copy(alpha = 0.08f)
+                    is MeshState.Uploading, is MeshState.AwaitingAck -> WarnAmber.copy(alpha = 0.06f)
                     else -> MaterialTheme.colorScheme.surface
                 }
             ),
-            shape = RoundedCornerShape(12.dp)
+            shape = RoundedCornerShape(16.dp),
+            elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
         ) {
             Column(modifier = Modifier.padding(16.dp)) {
                 Text(
                     text = meshState.title(),
                     fontWeight = FontWeight.Bold,
                     color = meshState.titleColor(),
-                    fontSize = 15.sp
+                    fontSize = 16.sp
                 )
-                Spacer(Modifier.height(4.dp))
+                Spacer(Modifier.height(6.dp))
                 Text(
                     text = meshState.subtitle(),
-                    color = SubtleGray,
-                    fontSize = 13.sp
+                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f),
+                    fontSize = 13.sp,
+                    lineHeight = 18.sp
                 )
                 if (meshState is MeshState.Originator) {
-                    Spacer(Modifier.height(6.dp))
+                    Spacer(Modifier.height(8.dp))
                     StateDetailRow("Server Status", "Pending confirmation")
                 }
                 if (meshState is MeshState.Confirmed) {
-                    Spacer(Modifier.height(6.dp))
+                    Spacer(Modifier.height(8.dp))
                     StateDetailRow("Server Status", "Uploaded and acknowledged")
                 }
                 val receivedPacket = meshState.receivedPacketForDisplay()
                 if (receivedPacket != null) {
-                    Spacer(Modifier.height(10.dp))
+                    Spacer(Modifier.height(12.dp))
                     Text(
                         text = "Received SOS Details",
                         color = WarnAmber,
-                        fontSize = 12.sp,
+                        fontSize = 13.sp,
                         fontWeight = FontWeight.Bold
                     )
-                    Spacer(Modifier.height(4.dp))
+                    Spacer(Modifier.height(6.dp))
                     StateDetailRow("Type", receivedPacket.type.name)
                     StateDetailRow(
                         "Emergency",
@@ -403,7 +478,7 @@ fun StateCard(
                     )
                     StateDetailRow("Location", receivedPacket.locationSummary())
                     if (canSendLocalHelpUpdate) {
-                        Spacer(Modifier.height(6.dp))
+                        Spacer(Modifier.height(8.dp))
                         HelperWorkflowActions(
                             activeStatus = activeHelperStatus,
                             onStatusUpdate = onHelperStatusUpdate
@@ -413,14 +488,14 @@ fun StateCard(
 
                 val victimUpdates = meshState.victimLocalHelpUpdates()
                 if (victimUpdates.isNotEmpty()) {
-                    Spacer(Modifier.height(10.dp))
+                    Spacer(Modifier.height(12.dp))
                     Text(
                         text = "Nearby Helper Updates",
                         color = SafeGreen,
-                        fontSize = 12.sp,
+                        fontSize = 13.sp,
                         fontWeight = FontWeight.Bold
                     )
-                    Spacer(Modifier.height(4.dp))
+                    Spacer(Modifier.height(6.dp))
                     victimUpdates.latestByHelper().forEach { update ->
                         StateDetailRow(
                             label = update.helperDeviceId.shortDeviceId(),
@@ -430,14 +505,14 @@ fun StateCard(
 
                     val victimLocation = meshState.victimPacketForDisplay()?.incident?.location
                     if (victimLocation != null || victimUpdates.any { it.location != null }) {
-                        Spacer(Modifier.height(10.dp))
+                        Spacer(Modifier.height(12.dp))
                         Text(
                             text = "Live Responder Tracking",
                             color = WarnAmber,
-                            fontSize = 12.sp,
+                            fontSize = 13.sp,
                             fontWeight = FontWeight.Bold
                         )
-                        Spacer(Modifier.height(6.dp))
+                        Spacer(Modifier.height(8.dp))
                         ResponderTrackingMap(
                             victimLocation = victimLocation,
                             helperUpdates = victimUpdates
@@ -445,9 +520,9 @@ fun StateCard(
                     }
                 }
                 if (meshState is MeshState.Confirmed || meshState is MeshState.Error) {
-                    Spacer(Modifier.height(8.dp))
+                    Spacer(Modifier.height(10.dp))
                     TextButton(onClick = onReset) {
-                        Text("Reset", color = WarnAmber)
+                        Text("Reset", color = MeshTeal, fontWeight = FontWeight.SemiBold)
                     }
                 }
             }
@@ -464,10 +539,10 @@ private fun HelperWorkflowActions(
         Text(
             text = "Helper Workflow",
             color = SafeGreen,
-            fontSize = 12.sp,
+            fontSize = 13.sp,
             fontWeight = FontWeight.Bold
         )
-        Spacer(Modifier.height(6.dp))
+        Spacer(Modifier.height(8.dp))
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -523,9 +598,10 @@ private fun RowScope.HelperWorkflowButton(
     Button(
         onClick = { onClick(status) },
         modifier = Modifier.weight(1f),
+        shape = RoundedCornerShape(10.dp),
         colors = ButtonDefaults.buttonColors(
-            containerColor = if (selected) accent else accent.copy(alpha = 0.22f),
-            contentColor = if (selected) Color.Black else MaterialTheme.colorScheme.onBackground
+            containerColor = if (selected) accent else accent.copy(alpha = 0.12f),
+            contentColor = if (selected) Color.White else accent
         )
     ) {
         Text(
@@ -548,7 +624,11 @@ private fun ResponderTrackingMap(
         .mapValues { (_, updates) -> updates.sortedBy { it.timestamp } }
 
     if (victimLocation == null && helperTrails.isEmpty()) {
-        Text("Live locations are not available yet.", color = SubtleGray, fontSize = 12.sp)
+        Text(
+            "Live locations are not available yet.",
+            color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.4f),
+            fontSize = 12.sp
+        )
         return
     }
 
@@ -584,9 +664,13 @@ private fun ResponderTrackingMap(
         modifier = Modifier
             .fillMaxWidth()
             .height(190.dp)
-            .clip(RoundedCornerShape(10.dp))
-            .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.45f))
-            .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.4f), RoundedCornerShape(10.dp))
+            .clip(RoundedCornerShape(12.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+            .border(
+                1.dp,
+                MaterialTheme.colorScheme.outline,
+                RoundedCornerShape(12.dp)
+            )
     ) {
         Canvas(modifier = Modifier.fillMaxSize().padding(10.dp)) {
             helperTrails.forEach { (helperId, trail) ->
@@ -604,14 +688,14 @@ private fun ResponderTrackingMap(
                 val latestStatus = trail.lastOrNull()?.status
                 if (latestPoint != null) {
                     val markerColor = when (latestStatus) {
-                        HelperStatus.CANNOT_CONTINUE -> SubtleGray
+                        HelperStatus.CANNOT_CONTINUE -> Color(0xFF9CA3AF)
                         HelperStatus.REACHED -> SafeGreen
                         HelperStatus.EN_ROUTE -> WarnAmber
                         else -> baseColor
                     }
                     drawCircle(color = markerColor, radius = 8f, center = latestPoint)
                     drawCircle(
-                        color = Color.Black.copy(alpha = 0.2f),
+                        color = Color.Black.copy(alpha = 0.15f),
                         radius = 12f,
                         center = latestPoint,
                         style = Stroke(width = 2f)
@@ -630,7 +714,7 @@ private fun ResponderTrackingMap(
     Spacer(Modifier.height(6.dp))
     Text(
         text = "Red: victim location • Colored trails: helper movement",
-        color = SubtleGray,
+        color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.4f),
         fontSize = 11.sp
     )
 }
@@ -639,12 +723,18 @@ private fun ResponderTrackingMap(
 
 @Composable
 private fun StateDetailRow(label: String, value: String) {
-    Column(modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
-        Text(label, color = SubtleGray, fontSize = 12.sp)
+    Column(modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp)) {
+        Text(
+            label,
+            color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.45f),
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Medium
+        )
+        Spacer(Modifier.height(1.dp))
         Text(
             value,
             color = MaterialTheme.colorScheme.onBackground,
-            fontSize = 12.sp,
+            fontSize = 13.sp,
             fontWeight = FontWeight.Medium,
             textAlign = TextAlign.Start
         )
