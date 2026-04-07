@@ -28,6 +28,7 @@ import javax.inject.Inject
 import javax.inject.Named
 import javax.inject.Singleton
 import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 
 private const val TAG = "NearbyTransport"
 private const val SERVICE_ID = "com.meshsos.emergency"
@@ -58,8 +59,21 @@ class NearbyConnectionsTransport @Inject constructor(
     // ── Lifecycle ─────────────────────────────────────────────────────────────
 
     override suspend fun start() {
+        val unavailableReason = TransportCapabilityChecker.nearbyUnavailableReason(context)
+        if (unavailableReason != null) {
+            Log.w(TAG, unavailableReason)
+            _peerEvents.tryEmit(PeerEvent.Error(unavailableReason))
+            throw IllegalStateException(unavailableReason)
+        }
+
         startAdvertising()
-        startDiscovery()
+        try {
+            startDiscovery()
+        } catch (e: Throwable) {
+            runCatching { connectionsClient.stopAdvertising() }
+            throw e
+        }
+
         Log.i(TAG, "NearbyConnections started. deviceId=$localDeviceId name=$localDeviceName")
     }
 
@@ -74,14 +88,14 @@ class NearbyConnectionsTransport @Inject constructor(
     }
 
     override fun isAvailable(): Boolean {
-        return true
+        return TransportCapabilityChecker.isNearbyAvailable(context)
     }
 
     override fun connectedPeerCount(): Int = connectedEndpoints.size
 
     // ── Advertising ───────────────────────────────────────────────────────────
 
-    private fun startAdvertising() {
+    private suspend fun startAdvertising() = suspendCancellableCoroutine<Unit> { cont ->
         val options = AdvertisingOptions.Builder()
             .setStrategy(Strategy.P2P_CLUSTER)
             .build()
@@ -94,15 +108,17 @@ class NearbyConnectionsTransport @Inject constructor(
         ).addOnSuccessListener {
             Log.d(TAG, "Advertising started as '$localDeviceName'")
             _peerEvents.tryEmit(PeerEvent.Log("Nearby", "Advertising started as '$localDeviceName'"))
+            if (cont.isActive) cont.resume(Unit)
         }.addOnFailureListener { e ->
             Log.e(TAG, "Advertising failed: ${e.message}")
             _peerEvents.tryEmit(PeerEvent.Error("Adv failed: ${e.message}"))
+            if (cont.isActive) cont.resumeWithException(e)
         }
     }
 
     // ── Discovery ─────────────────────────────────────────────────────────────
 
-    private fun startDiscovery() {
+    private suspend fun startDiscovery() = suspendCancellableCoroutine<Unit> { cont ->
         val options = DiscoveryOptions.Builder()
             .setStrategy(Strategy.P2P_CLUSTER)
             .build()
@@ -114,9 +130,11 @@ class NearbyConnectionsTransport @Inject constructor(
         ).addOnSuccessListener {
             Log.d(TAG, "Discovery started")
             _peerEvents.tryEmit(PeerEvent.Log("Nearby", "Discovery started"))
+            if (cont.isActive) cont.resume(Unit)
         }.addOnFailureListener { e ->
             Log.e(TAG, "Discovery failed: ${e.message}")
             _peerEvents.tryEmit(PeerEvent.Error("Disc failed: ${e.message}"))
+            if (cont.isActive) cont.resumeWithException(e)
         }
     }
 
@@ -299,4 +317,3 @@ class NearbyConnectionsTransport @Inject constructor(
                 .addOnFailureListener { e -> cont.resume(Result.failure(e)) }
         }
 }
-

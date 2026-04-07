@@ -39,10 +39,10 @@ class TransportManager @Inject constructor(
     suspend fun start() {
         isRunning = true
         registerWifiP2pReceiver()
-        val transport = selectBestTransport()
-        _activeTransport.value = transport
-        transport.start()
-        Log.i(TAG, "Transport started: ${transport.transportName}")
+        val preferred = selectBestTransport()
+        val started = startWithFallback(preferred)
+        _activeTransport.value = started
+        Log.i(TAG, "Transport started: ${started.transportName}")
     }
 
     suspend fun stop() {
@@ -57,12 +57,20 @@ class TransportManager @Inject constructor(
 
     private fun selectBestTransport(): Transport {
         val wifiP2pAvailable = isWifiDirectAvailable()
-        Log.i(TAG, "WiFi Direct available: $wifiP2pAvailable")
-        return if (wifiP2pAvailable) {
+        val nearbyAvailable = nearbyTransport.isAvailable()
+        val bleAvailable = bleGattTransport.isAvailable()
+        Log.i(
+            TAG,
+            "Availability: wifiP2p=$wifiP2pAvailable nearby=$nearbyAvailable ble=$bleAvailable"
+        )
+        return if (wifiP2pAvailable && nearbyAvailable) {
             Log.i(TAG, "Selecting NearbyConnections (WiFi Direct + BLE)")
             nearbyTransport
-        } else {
+        } else if (bleAvailable) {
             Log.i(TAG, "Selecting BLE GATT fallback (pure BLE)")
+            bleGattTransport
+        } else {
+            Log.w(TAG, "No transport fully available; defaulting to BLE and waiting for state recovery")
             bleGattTransport
         }
     }
@@ -72,9 +80,35 @@ class TransportManager @Inject constructor(
         if (current.transportName == newTransport.transportName) return
 
         Log.i(TAG, "Switching transport: ${current.transportName} -> ${newTransport.transportName}")
-        current.stop()
-        _activeTransport.value = newTransport
-        newTransport.start()
+        runCatching { current.stop() }
+            .onFailure { Log.w(TAG, "Failed stopping current transport: ${it.message}") }
+        val started = runCatching { startWithFallback(newTransport) }.getOrElse { error ->
+            Log.e(TAG, "Switch failed (${newTransport.transportName}), attempting rollback", error)
+            runCatching { current.start() }
+                .onSuccess { _activeTransport.value = current }
+            throw error
+        }
+        _activeTransport.value = started
+    }
+
+    private suspend fun startWithFallback(preferred: Transport): Transport {
+        return runCatching {
+            preferred.start()
+            preferred
+        }.getOrElse { startError ->
+            val fallback = if (preferred === nearbyTransport) bleGattTransport else nearbyTransport
+            if (fallback === preferred || !fallback.isAvailable()) {
+                throw startError
+            }
+
+            Log.w(
+                TAG,
+                "Start failed for ${preferred.transportName}: ${startError.message}. Falling back to ${fallback.transportName}",
+                startError
+            )
+            fallback.start()
+            fallback
+        }
     }
 
     private fun isWifiDirectAvailable(): Boolean {
@@ -94,7 +128,11 @@ class TransportManager @Inject constructor(
                 if (!isRunning) return
 
                 scope.launch {
-                    val bestTransport = if (wifiEnabled) nearbyTransport else bleGattTransport
+                    val bestTransport = when {
+                        wifiEnabled && nearbyTransport.isAvailable() -> nearbyTransport
+                        bleGattTransport.isAvailable() -> bleGattTransport
+                        else -> _activeTransport.value
+                    }
                     if (_activeTransport.value.transportName != bestTransport.transportName) {
                         Log.i(TAG, "WiFi state change → switching transport to ${bestTransport.transportName}")
                         switchTo(bestTransport)
@@ -106,7 +144,11 @@ class TransportManager @Inject constructor(
 
     private fun registerWifiP2pReceiver() {
         val filter = IntentFilter(WifiP2pManager.WIFI_P2P_STATE_CHANGED_ACTION)
-        context.registerReceiver(wifiP2pReceiver, filter)
+        runCatching {
+            context.registerReceiver(wifiP2pReceiver, filter)
+        }.onFailure {
+            Log.w(TAG, "Failed to register WiFi P2P receiver: ${it.message}")
+        }
     }
 
     // ── Delegate send methods ─────────────────────────────────────────────────

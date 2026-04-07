@@ -73,25 +73,47 @@ class BleGattTransport @Inject constructor(
     private val _incomingAcks = MutableSharedFlow<AckPacket>(extraBufferCapacity = 32)
     override val incomingAcks: SharedFlow<AckPacket> = _incomingAcks.asSharedFlow()
 
-    override fun isAvailable(): Boolean = bluetoothAdapter?.isEnabled == true
+    override fun isAvailable(): Boolean = TransportCapabilityChecker.isBleAvailable(context)
 
     override fun connectedPeerCount(): Int = connectedGattClients.size + connectedGatts.size
 
     // ── Start / Stop ──────────────────────────────────────────────────────────
 
     override suspend fun start() {
-        startGattServer()
-        startAdvertising()
-        startScanning()
+        val unavailableReason = TransportCapabilityChecker.bleUnavailableReason(context)
+        if (unavailableReason != null) {
+            Log.w(TAG, unavailableReason)
+            _peerEvents.tryEmit(PeerEvent.Error(unavailableReason))
+            throw IllegalStateException(unavailableReason)
+        }
+
+        try {
+            startGattServer()
+            startAdvertising()
+            startScanning()
+        } catch (e: SecurityException) {
+            val message = "BLE start blocked by permissions: ${e.message ?: "SecurityException"}"
+            Log.e(TAG, message, e)
+            _peerEvents.tryEmit(PeerEvent.Error(message))
+            throw e
+        } catch (e: Throwable) {
+            val message = "BLE start failed: ${e.message ?: e.javaClass.simpleName}"
+            Log.e(TAG, message, e)
+            _peerEvents.tryEmit(PeerEvent.Error(message))
+            throw e
+        }
+
         Log.i(TAG, "BLE GATT transport started")
     }
 
     override suspend fun stop() {
-        bleAdvertiser?.stopAdvertising(advertiseCallback)
-        bleScanner?.stopScan(scanCallback)
-        connectedGatts.values.forEach { it.close() }
+        runCatching { bleAdvertiser?.stopAdvertising(advertiseCallback) }
+        runCatching { bleScanner?.stopScan(scanCallback) }
+        connectedGatts.values.forEach { gatt ->
+            runCatching { gatt.close() }
+        }
         connectedGatts.clear()
-        gattServer?.close()
+        runCatching { gattServer?.close() }
         gattServer = null
         connectedGattClients.clear()
         Log.i(TAG, "BLE GATT transport stopped")

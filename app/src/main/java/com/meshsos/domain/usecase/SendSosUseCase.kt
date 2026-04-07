@@ -88,29 +88,36 @@ class SendSosUseCase @Inject constructor(
         return Result.success(packet)
     }
 
-    @SuppressLint("MissingPermission")
     private suspend fun getLastLocation(): LocationInfo? =
         suspendCancellableCoroutine { cont ->
-            val fusedClient = LocationServices.getFusedLocationProviderClient(context)
-            fusedClient.getCurrentLocation(
-                Priority.PRIORITY_BALANCED_POWER_ACCURACY,
-                null
-            ).addOnSuccessListener { androidLocation ->
-                if (androidLocation == null) {
-                    cont.resume(null)
-                    return@addOnSuccessListener
-                }
-                val address = reverseGeocode(androidLocation.latitude, androidLocation.longitude)
-                cont.resume(
-                    LocationInfo(
-                        lat = androidLocation.latitude,
-                        lng = androidLocation.longitude,
-                        accuracy = androidLocation.accuracy,
-                        address = address
+            try {
+                val fusedClient = LocationServices.getFusedLocationProviderClient(context)
+                fusedClient.getCurrentLocation(
+                    Priority.PRIORITY_BALANCED_POWER_ACCURACY,
+                    null
+                ).addOnSuccessListener { androidLocation ->
+                    if (androidLocation == null) {
+                        cont.resume(null)
+                        return@addOnSuccessListener
+                    }
+                    val address = reverseGeocode(androidLocation.latitude, androidLocation.longitude)
+                    cont.resume(
+                        LocationInfo(
+                            lat = androidLocation.latitude,
+                            lng = androidLocation.longitude,
+                            accuracy = androidLocation.accuracy,
+                            address = address
+                        )
                     )
-                )
-            }.addOnFailureListener {
-                Log.w(TAG, "Location failed: ${it.message}")
+                }.addOnFailureListener {
+                    Log.w(TAG, "Location failed: ${it.message}")
+                    cont.resume(null)
+                }
+            } catch (e: SecurityException) {
+                Log.e(TAG, "Location permission missing: ${e.message}")
+                cont.resume(null)
+            } catch (e: Exception) {
+                Log.e(TAG, "Error fetching location: ${e.message}")
                 cont.resume(null)
             }
         }

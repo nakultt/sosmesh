@@ -23,25 +23,33 @@ class DeviceLocationProvider @Inject constructor(
     suspend fun getCurrentLocation(timeoutMs: Long = 2_500): LocationInfo? {
         return withTimeoutOrNull(timeoutMs) {
             suspendCancellableCoroutine { cont ->
-                val fusedClient = LocationServices.getFusedLocationProviderClient(context)
-                fusedClient.getCurrentLocation(
-                    Priority.PRIORITY_BALANCED_POWER_ACCURACY,
-                    null
-                ).addOnSuccessListener { androidLocation ->
-                    if (androidLocation == null) {
-                        cont.resume(null)
-                        return@addOnSuccessListener
-                    }
-                    cont.resume(
-                        LocationInfo(
-                            lat = androidLocation.latitude,
-                            lng = androidLocation.longitude,
-                            accuracy = androidLocation.accuracy,
-                            address = ""
+                try {
+                    val fusedClient = LocationServices.getFusedLocationProviderClient(context)
+                    fusedClient.getCurrentLocation(
+                        Priority.PRIORITY_BALANCED_POWER_ACCURACY,
+                        null
+                    ).addOnSuccessListener { androidLocation ->
+                        if (androidLocation == null) {
+                            cont.resume(null)
+                            return@addOnSuccessListener
+                        }
+                        cont.resume(
+                            LocationInfo(
+                                lat = androidLocation.latitude,
+                                lng = androidLocation.longitude,
+                                accuracy = androidLocation.accuracy,
+                                address = ""
+                            )
                         )
-                    )
-                }.addOnFailureListener {
-                    Log.w(TAG, "Location fetch failed: ${it.message}")
+                    }.addOnFailureListener {
+                        Log.w(TAG, "Location fetch failed: ${it.message}")
+                        cont.resume(null)
+                    }
+                } catch (e: SecurityException) {
+                    Log.e(TAG, "Location permission missing: ${e.message}")
+                    cont.resume(null)
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error fetching location: ${e.message}")
                     cont.resume(null)
                 }
             }

@@ -85,6 +85,7 @@ class MeshViewModel @Inject constructor(
 
     private var helperTrackingJob: Job? = null
     private var helperTrackingPacketId: String? = null
+    private var peerCountPollerJob: Job? = null
 
     val batteryLevel get() = batteryMonitor.getBatteryLevel()
 
@@ -92,6 +93,11 @@ class MeshViewModel @Inject constructor(
 
     fun startService() {
         MeshForegroundService.start(context)
+        startPeerCountPoller()
+    }
+
+    fun refreshService() {
+        MeshForegroundService.refresh(context)
         startPeerCountPoller()
     }
 
@@ -164,7 +170,8 @@ class MeshViewModel @Inject constructor(
     // ── Peer count polling ────────────────────────────────────────────────────
 
     private fun startPeerCountPoller() {
-        viewModelScope.launch {
+        if (peerCountPollerJob?.isActive == true) return
+        peerCountPollerJob = viewModelScope.launch {
             while (true) {
                 _peerCount.value = transportManager.connectedPeerCount()
                 val interval = adaptiveScanStrategy.getScanIntervalMs(
@@ -260,6 +267,8 @@ class MeshViewModel @Inject constructor(
 
     override fun onCleared() {
         stopEnRouteTracking()
+        peerCountPollerJob?.cancel()
+        peerCountPollerJob = null
         super.onCleared()
     }
 

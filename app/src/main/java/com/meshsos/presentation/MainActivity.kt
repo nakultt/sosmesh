@@ -1,8 +1,10 @@
 package com.meshsos.presentation
 
 import android.Manifest
+import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -27,8 +29,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
-import com.meshsos.background.MeshForegroundService
 import com.meshsos.presentation.screens.DebugConsoleScreen
 import com.meshsos.presentation.screens.MeshStatusScreen
 import com.meshsos.presentation.screens.RelayLogScreen
@@ -42,14 +44,21 @@ import dagger.hilt.android.AndroidEntryPoint
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
 
+    companion object {
+        private const val TAG = "MainActivity"
+    }
+
     private val viewModel: MeshViewModel by viewModels()
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
-    ) { _ ->
-        // Start service regardless — it will work with whatever permissions are granted
-        // Nearby Connections handles permission errors gracefully at runtime
-        viewModel.startService()
+    ) { result ->
+        val denied = result.filterValues { granted -> !granted }.keys
+        if (denied.isNotEmpty()) {
+            Log.w(TAG, "Permissions denied: ${denied.joinToString()}")
+        }
+        // Always trigger refresh so the running service picks up newly granted permissions/states.
+        viewModel.refreshService()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -138,7 +147,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun requestRequiredPermissions() {
-        val permissions = buildList {
+        val requiredPermissions = buildList {
             add(Manifest.permission.ACCESS_FINE_LOCATION)
             add(Manifest.permission.ACCESS_COARSE_LOCATION)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -151,6 +160,16 @@ class MainActivity : ComponentActivity() {
                 add(Manifest.permission.POST_NOTIFICATIONS)
             }
         }
-        permissionLauncher.launch(permissions.toTypedArray())
+
+        val missingPermissions = requiredPermissions.filterNot(::isPermissionGranted)
+        if (missingPermissions.isEmpty()) {
+            viewModel.refreshService()
+            return
+        }
+
+        permissionLauncher.launch(missingPermissions.toTypedArray())
     }
+
+    private fun isPermissionGranted(permission: String): Boolean =
+        ContextCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED
 }
