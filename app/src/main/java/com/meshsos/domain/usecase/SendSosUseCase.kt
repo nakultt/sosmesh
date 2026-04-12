@@ -36,6 +36,7 @@ class SendSosUseCase @Inject constructor(
     private val stateMachine: MeshStateMachine,
     private val transportManager: TransportManager,
     private val deduplicationService: DeduplicationService,
+    private val uploadPacketUseCase: com.meshsos.domain.usecase.UploadPacketUseCase,
     @Named("deviceId") private val localDeviceId: String,
     private val batteryMonitor: com.meshsos.domain.service.BatteryMonitor
 ) {
@@ -80,10 +81,33 @@ class SendSosUseCase @Inject constructor(
         stateMachine.dispatch(MeshEvent.UserTriggeredSos(packet))
 
         // 5. Broadcast to connected peers immediately
-        val result = transportManager.broadcastPacket(packet)
+        val broadcastResult = transportManager.broadcastPacket(packet)
         val peerCount = transportManager.connectedPeerCount()
         stateMachine.updatePeersReached(peerCount)
-        Log.d(TAG, "Broadcast result: $result peers=$peerCount")
+        Log.d(TAG, "Broadcast result: $broadcastResult peers=$peerCount")
+
+        // 6. Primary Sender Direct Upload
+        // If the device sending the SOS has active internet, it should immediately upload it to the server!
+        val hasInternet = uploadPacketUseCase.hasInternet()
+        if (hasInternet) {
+            val uploadResult = uploadPacketUseCase.upload(packet)
+            uploadResult.onSuccess { response ->
+                val serverAck = com.meshsos.domain.model.AckPacket(
+                    originalPacketId = packet.id,
+                    alertId = response.alertId,
+                    uploadedBy = localDeviceId,
+                    respondersNotified = response.respondersNotified,
+                    estimatedArrival = response.estimatedArrival
+                )
+                // We use onAckReceived to seamlessly drop into MeshState.Confirmed state for Originator
+                stateMachine.onAckReceived(serverAck)
+                Log.i(TAG, "Originator direct upload successful! Alert ID: ${response.alertId}")
+            }.onFailure { ex ->
+                Log.w(TAG, "Originator direct upload failed: ${ex.message}")
+            }
+        } else {
+            Log.i(TAG, "No internet for direct upload, relying entirely on mesh broadcast.")
+        }
 
         return Result.success(packet)
     }

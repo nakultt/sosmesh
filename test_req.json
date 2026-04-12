@@ -1,0 +1,22 @@
+{
+  "packet": {
+    "id": "test-1234",
+    "type": "SOS",
+    "senderId": "DEVICE_A",
+    "incident": {
+      "severity": "CRITICAL",
+      "category": "MEDICAL",
+      "message": "test"
+    },
+    "metadata": {
+      "createdAt": 1712497645,
+      "ttl": 3600,
+      "maxHops": 10,
+      "currentHops": 1,
+      "route": [],
+      "batteryLevel": 90
+    },
+    "uploaded": false
+  },
+  "relayDeviceId": "DEVICE_B"
+}

@@ -14,8 +14,10 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.List
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material.icons.filled.Build
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
@@ -30,12 +32,15 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import com.meshsos.presentation.screens.MeshStatusScreen
+import com.meshsos.presentation.screens.RelayLogScreen
 import com.meshsos.presentation.screens.SettingsScreen
 import com.meshsos.presentation.screens.SosScreen
+import com.meshsos.presentation.screens.DebugConsoleScreen
 import com.meshsos.presentation.theme.MeshSosTheme
 import com.meshsos.presentation.theme.MeshTeal
 import com.meshsos.presentation.theme.ThemePreferences
@@ -91,7 +96,7 @@ class MainActivity : ComponentActivity() {
                     bottomBar = {
                         NavigationBar(
                             containerColor = navBarColor,
-                            tonalElevation = androidx.compose.ui.unit.dp.times(0)
+                            tonalElevation = 0.dp
                         ) {
                             NavigationBarItem(
                                 selected = selectedTab == 0,
@@ -146,6 +151,54 @@ class MainActivity : ComponentActivity() {
                                 onClick = { selectedTab = 2 },
                                 icon = {
                                     Icon(
+                                        Icons.Default.List,
+                                        contentDescription = "Logs"
+                                    )
+                                },
+                                label = {
+                                    Text(
+                                        "Logs",
+                                        fontWeight = if (selectedTab == 2) FontWeight.Bold else FontWeight.Normal,
+                                        fontSize = 12.sp
+                                    )
+                                },
+                                colors = NavigationBarItemDefaults.colors(
+                                    selectedIconColor = selectedColor,
+                                    selectedTextColor = selectedColor,
+                                    unselectedIconColor = unselectedColor,
+                                    unselectedTextColor = unselectedColor,
+                                    indicatorColor = indicatorColor
+                                )
+                            )
+                            NavigationBarItem(
+                                selected = selectedTab == 3,
+                                onClick = { selectedTab = 3 },
+                                icon = {
+                                    Icon(
+                                        Icons.Default.Build,
+                                        contentDescription = "Debug"
+                                    )
+                                },
+                                label = {
+                                    Text(
+                                        "Debug",
+                                        fontWeight = if (selectedTab == 3) FontWeight.Bold else FontWeight.Normal,
+                                        fontSize = 12.sp
+                                    )
+                                },
+                                colors = NavigationBarItemDefaults.colors(
+                                    selectedIconColor = selectedColor,
+                                    selectedTextColor = selectedColor,
+                                    unselectedIconColor = unselectedColor,
+                                    unselectedTextColor = unselectedColor,
+                                    indicatorColor = indicatorColor
+                                )
+                            )
+                            NavigationBarItem(
+                                selected = selectedTab == 4,
+                                onClick = { selectedTab = 4 },
+                                icon = {
+                                    Icon(
                                         Icons.Default.Settings,
                                         contentDescription = "Settings"
                                     )
@@ -153,7 +206,7 @@ class MainActivity : ComponentActivity() {
                                 label = {
                                     Text(
                                         "Settings",
-                                        fontWeight = if (selectedTab == 2) FontWeight.Bold else FontWeight.Normal,
+                                        fontWeight = if (selectedTab == 4) FontWeight.Bold else FontWeight.Normal,
                                         fontSize = 12.sp
                                     )
                                 },
@@ -172,7 +225,9 @@ class MainActivity : ComponentActivity() {
                         when (selectedTab) {
                             0 -> SosScreen(viewModel = viewModel)
                             1 -> MeshStatusScreen(viewModel = viewModel)
-                            2 -> SettingsScreen(
+                            2 -> RelayLogScreen(viewModel = viewModel)
+                            3 -> DebugConsoleScreen(viewModel = viewModel)
+                            4 -> SettingsScreen(
                                 viewModel = viewModel,
                                 themePreferences = themePreferences,
                                 isDarkMode = isDarkMode

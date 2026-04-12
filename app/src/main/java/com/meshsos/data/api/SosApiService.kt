@@ -14,8 +14,27 @@ import javax.inject.Singleton
 
 // ── API models ────────────────────────────────────────────────────────────────
 
+data class PacketMetadataDto(
+    val createdAt: Long,
+    val ttl: Int,
+    val maxHops: Int,
+    val currentHops: Int,
+    val route: List<String>,
+    val batteryLevel: Int
+)
+
+data class SosPacketDto(
+    val id: String,
+    val type: com.meshsos.domain.model.PacketType,
+    val senderId: String,
+    val incident: com.meshsos.domain.model.IncidentInfo,
+    val metadata: PacketMetadataDto,
+    val uploaded: Boolean,
+    val uploadTimestamp: Long?
+)
+
 data class UploadRequest(
-    val packet: SosPacket,
+    val packet: SosPacketDto,
     val relayDeviceId: String,
     val relayLocation: LocationInfo?
 )

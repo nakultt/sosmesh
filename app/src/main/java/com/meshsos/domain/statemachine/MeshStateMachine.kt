@@ -278,6 +278,8 @@ class MeshStateMachine @Inject constructor(
                 onFailure = { error ->
                     Log.e(TAG, "Upload failed: ${error.message}")
                     emitLog(MeshEventType.ERROR, "Upload failed: ${error.message}", incrementedPacket.id)
+                    // Transition state to Relay after upload fails so UI unstucks
+                    _state.value = MeshState.Relay(incrementedPacket, fromDevice)
                     // Fall through to relay even if upload failed
                     relayForward(incrementedPacket)
                 }
