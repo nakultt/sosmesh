@@ -13,6 +13,7 @@ import com.meshsos.domain.model.IncidentCategory
 import com.meshsos.domain.model.IncidentInfo
 import com.meshsos.domain.model.LocationInfo
 import com.meshsos.domain.model.PacketMetadata
+import com.meshsos.domain.model.RoutePoint
 import com.meshsos.domain.model.Severity
 import com.meshsos.domain.model.SosPacket
 import com.meshsos.domain.service.DeduplicationService
@@ -35,6 +36,7 @@ class SendSosUseCase @Inject constructor(
     private val stateMachine: MeshStateMachine,
     private val transportManager: TransportManager,
     private val deduplicationService: DeduplicationService,
+    private val uploadPacketUseCase: com.meshsos.domain.usecase.UploadPacketUseCase,
     @Named("deviceId") private val localDeviceId: String,
     private val batteryMonitor: com.meshsos.domain.service.BatteryMonitor
 ) {
@@ -50,6 +52,7 @@ class SendSosUseCase @Inject constructor(
         val location = withTimeoutOrNull(5_000) { getLastLocation() }
 
         // 2. Build packet
+        val now = java.time.Instant.now().epochSecond
         val packet = SosPacket(
             senderId = localDeviceId,
             incident = IncidentInfo(
@@ -59,6 +62,14 @@ class SendSosUseCase @Inject constructor(
                 location = location
             ),
             metadata = PacketMetadata(
+                createdAt = now,
+                route = listOf(
+                    RoutePoint(
+                        deviceId = localDeviceId,
+                        location = location,
+                        timestamp = now
+                    )
+                ),
                 batteryLevel = batteryMonitor.getBatteryLevel()
             )
         )
@@ -70,37 +81,67 @@ class SendSosUseCase @Inject constructor(
         stateMachine.dispatch(MeshEvent.UserTriggeredSos(packet))
 
         // 5. Broadcast to connected peers immediately
-        val result = transportManager.broadcastPacket(packet)
+        val broadcastResult = transportManager.broadcastPacket(packet)
         val peerCount = transportManager.connectedPeerCount()
         stateMachine.updatePeersReached(peerCount)
-        Log.d(TAG, "Broadcast result: $result peers=$peerCount")
+        Log.d(TAG, "Broadcast result: $broadcastResult peers=$peerCount")
+
+        // 6. Primary Sender Direct Upload
+        // If the device sending the SOS has active internet, it should immediately upload it to the server!
+        val hasInternet = uploadPacketUseCase.hasInternet()
+        if (hasInternet) {
+            val uploadResult = uploadPacketUseCase.upload(packet)
+            uploadResult.onSuccess { response ->
+                val serverAck = com.meshsos.domain.model.AckPacket(
+                    originalPacketId = packet.id,
+                    alertId = response.alertId,
+                    uploadedBy = localDeviceId,
+                    respondersNotified = response.respondersNotified,
+                    estimatedArrival = response.estimatedArrival
+                )
+                // We use onAckReceived to seamlessly drop into MeshState.Confirmed state for Originator
+                stateMachine.onAckReceived(serverAck)
+                Log.i(TAG, "Originator direct upload successful! Alert ID: ${response.alertId}")
+            }.onFailure { ex ->
+                Log.w(TAG, "Originator direct upload failed: ${ex.message}")
+            }
+        } else {
+            Log.i(TAG, "No internet for direct upload, relying entirely on mesh broadcast.")
+        }
 
         return Result.success(packet)
     }
 
-    @SuppressLint("MissingPermission")
     private suspend fun getLastLocation(): LocationInfo? =
         suspendCancellableCoroutine { cont ->
-            val fusedClient = LocationServices.getFusedLocationProviderClient(context)
-            fusedClient.getCurrentLocation(
-                Priority.PRIORITY_BALANCED_POWER_ACCURACY,
-                null
-            ).addOnSuccessListener { androidLocation ->
-                if (androidLocation == null) {
-                    cont.resume(null)
-                    return@addOnSuccessListener
-                }
-                val address = reverseGeocode(androidLocation.latitude, androidLocation.longitude)
-                cont.resume(
-                    LocationInfo(
-                        lat = androidLocation.latitude,
-                        lng = androidLocation.longitude,
-                        accuracy = androidLocation.accuracy,
-                        address = address
+            try {
+                val fusedClient = LocationServices.getFusedLocationProviderClient(context)
+                fusedClient.getCurrentLocation(
+                    Priority.PRIORITY_BALANCED_POWER_ACCURACY,
+                    null
+                ).addOnSuccessListener { androidLocation ->
+                    if (androidLocation == null) {
+                        cont.resume(null)
+                        return@addOnSuccessListener
+                    }
+                    val address = reverseGeocode(androidLocation.latitude, androidLocation.longitude)
+                    cont.resume(
+                        LocationInfo(
+                            lat = androidLocation.latitude,
+                            lng = androidLocation.longitude,
+                            accuracy = androidLocation.accuracy,
+                            address = address
+                        )
                     )
-                )
-            }.addOnFailureListener {
-                Log.w(TAG, "Location failed: ${it.message}")
+                }.addOnFailureListener {
+                    Log.w(TAG, "Location failed: ${it.message}")
+                    cont.resume(null)
+                }
+            } catch (e: SecurityException) {
+                Log.e(TAG, "Location permission missing: ${e.message}")
+                cont.resume(null)
+            } catch (e: Exception) {
+                Log.e(TAG, "Error fetching location: ${e.message}")
                 cont.resume(null)
             }
         }

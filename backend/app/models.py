@@ -13,6 +13,12 @@ class LocationInfo(BaseModel):
     address: str = ""
 
 
+class RoutePoint(BaseModel):
+    deviceId: str
+    location: Optional[LocationInfo] = None
+    timestamp: int
+
+
 # ── Incident ───────────────────────────────────────────────────────────────────
 
 class IncidentInfo(BaseModel):
@@ -29,7 +35,7 @@ class PacketMetadata(BaseModel):
     ttl: int = 3600
     maxHops: int = 10
     currentHops: int = 0
-    route: list[str] = []
+    route: list[RoutePoint | str] = Field(default_factory=list)
     batteryLevel: int = 100
 
 
@@ -60,6 +66,7 @@ class UploadResponse(BaseModel):
     alertId: str
     respondersNotified: int = 0
     estimatedArrival: str = ""
+    deduplicated: bool = False
 
 
 # ── Alert (stored in MongoDB) ─────────────────────────────────────────────────
@@ -72,12 +79,17 @@ class Alert(BaseModel):
     category: str
     message: str
     location: Optional[LocationInfo] = None
-    route: list[str] = []
+    route: list[RoutePoint | str] = Field(default_factory=list)
     currentHops: int = 0
     maxHops: int = 10
     batteryLevel: int = 100
     relayDeviceId: str
     relayLocation: Optional[LocationInfo] = None
+    dedupeKey: str
+    relayDeviceIds: list[str] = Field(default_factory=list)
+    uploadAttempts: int = 1
+    lastRelayDeviceId: str
+    lastReceivedAt: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
     status: str = "ACTIVE"  # ACTIVE, RESPONDING, RESOLVED
     createdAt: int  # epoch seconds from device
     receivedAt: str = Field(default_factory=lambda: datetime.utcnow().isoformat())

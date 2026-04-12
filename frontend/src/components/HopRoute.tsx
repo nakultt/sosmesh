@@ -1,14 +1,18 @@
 import { Smartphone, Server, ArrowRight } from "lucide-react";
+import type { RoutePoint } from "../lib/types";
 
 interface Props {
-  route: string[];
+  route: Array<RoutePoint | string>;
   senderId: string;
   relayDeviceId: string;
 }
 
 export default function HopRoute({ route, senderId, relayDeviceId }: Props) {
   // Build full chain: originator → relays → server
-  const allNodes = route.length > 0 ? [...route] : [senderId];
+  const routeDeviceIds = route.map((point) =>
+    typeof point === "string" ? point : point.deviceId
+  );
+  const allNodes = routeDeviceIds.length > 0 ? [...routeDeviceIds] : [senderId];
   // Ensure originator is first
   if (allNodes[0] !== senderId) {
     allNodes.unshift(senderId);

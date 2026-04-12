@@ -8,22 +8,31 @@ import com.meshsos.data.db.dao.MeshEventDao
 import com.meshsos.data.db.dao.PendingPacketDao
 import com.meshsos.data.db.entity.MeshEventEntity
 import com.meshsos.data.transport.TransportManager
+import com.meshsos.domain.model.AckPacket
+import com.meshsos.domain.model.HelperStatus
 import com.meshsos.domain.model.IncidentCategory
+import com.meshsos.domain.model.MeshEventType
 import com.meshsos.domain.model.Severity
+import com.meshsos.domain.model.SosPacket
 import com.meshsos.domain.service.AdaptiveScanStrategy
 import com.meshsos.domain.service.BatteryMonitor
+import com.meshsos.domain.service.DeviceLocationProvider
 import com.meshsos.domain.service.PowerMode
 import com.meshsos.domain.statemachine.MeshState
 import com.meshsos.domain.statemachine.MeshStateMachine
 import com.meshsos.domain.usecase.SendSosUseCase
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import java.time.Instant
 import javax.inject.Inject
 import javax.inject.Named
 
@@ -34,6 +43,7 @@ class MeshViewModel @Inject constructor(
     private val transportManager: TransportManager,
     private val sendSosUseCase: SendSosUseCase,
     private val batteryMonitor: BatteryMonitor,
+    private val deviceLocationProvider: DeviceLocationProvider,
     private val adaptiveScanStrategy: AdaptiveScanStrategy,
     private val meshEventDao: MeshEventDao,
     private val pendingPacketDao: PendingPacketDao,
@@ -70,12 +80,24 @@ class MeshViewModel @Inject constructor(
     private val _peerCount = MutableStateFlow(0)
     val peerCount: StateFlow<Int> = _peerCount.asStateFlow()
 
+    private val _activeHelperStatus = MutableStateFlow<HelperStatus?>(null)
+    val activeHelperStatus: StateFlow<HelperStatus?> = _activeHelperStatus.asStateFlow()
+
+    private var helperTrackingJob: Job? = null
+    private var helperTrackingPacketId: String? = null
+    private var peerCountPollerJob: Job? = null
+
     val batteryLevel get() = batteryMonitor.getBatteryLevel()
 
     // ── Actions ───────────────────────────────────────────────────────────────
 
     fun startService() {
         MeshForegroundService.start(context)
+        startPeerCountPoller()
+    }
+
+    fun refreshService() {
+        MeshForegroundService.refresh(context)
         startPeerCountPoller()
     }
 
@@ -99,6 +121,9 @@ class MeshViewModel @Inject constructor(
 
     fun resetState() {
         stateMachine.reset()
+        stopEnRouteTracking()
+        helperTrackingPacketId = null
+        _activeHelperStatus.value = null
     }
 
     fun dismissError() {
@@ -111,10 +136,42 @@ class MeshViewModel @Inject constructor(
         }
     }
 
+    fun canSendLocalHelpUpdate(): Boolean = receivedPacketContext(meshState.value) != null
+
+    fun sendLocalHelpUpdate(etaMinutes: Int = 8) {
+        sendHelperStatusUpdate(HelperStatus.ACCEPTED, etaMinutes)
+    }
+
+    fun sendHelperStatusUpdate(
+        status: HelperStatus,
+        etaMinutes: Int = 8
+    ) {
+        viewModelScope.launch {
+            val context = receivedPacketContext(meshState.value)
+            if (context == null) {
+                _sendError.value = "No received SOS available for helper update."
+                return@launch
+            }
+            val result = sendHelperUpdateAck(context, status, etaMinutes, isBackgroundTick = false)
+            result.onSuccess {
+                helperTrackingPacketId = context.packet.id
+                _activeHelperStatus.value = status
+                when (status) {
+                    HelperStatus.EN_ROUTE -> startEnRouteTracking(etaMinutes)
+                    HelperStatus.REACHED, HelperStatus.CANNOT_CONTINUE -> stopEnRouteTracking()
+                    HelperStatus.ACCEPTED -> Unit
+                }
+            }.onFailure {
+                _sendError.value = "Failed to send helper update: ${it.message ?: "unknown error"}"
+            }
+        }
+    }
+
     // ── Peer count polling ────────────────────────────────────────────────────
 
     private fun startPeerCountPoller() {
-        viewModelScope.launch {
+        if (peerCountPollerJob?.isActive == true) return
+        peerCountPollerJob = viewModelScope.launch {
             while (true) {
                 _peerCount.value = transportManager.connectedPeerCount()
                 val interval = adaptiveScanStrategy.getScanIntervalMs(
@@ -125,8 +182,109 @@ class MeshViewModel @Inject constructor(
                         else -> PowerMode.IDLE
                     }
                 )
-                kotlinx.coroutines.delay(interval.coerceAtMost(5_000)) // poll UI max every 5s
+                delay(interval.coerceAtMost(5_000)) // poll UI max every 5s
             }
         }
+    }
+
+    private suspend fun sendHelperUpdateAck(
+        context: ReceivedPacketContext,
+        status: HelperStatus,
+        etaMinutes: Int,
+        isBackgroundTick: Boolean
+    ): Result<Unit> {
+        val timestamp = Instant.now().epochSecond
+        val location = deviceLocationProvider.getCurrentLocation()
+        val etaText = when (status) {
+            HelperStatus.ACCEPTED -> "Accepted (ETA ~${etaMinutes} min)"
+            HelperStatus.EN_ROUTE -> "En route (ETA ~${etaMinutes} min)"
+            HelperStatus.REACHED -> "Reached victim location"
+            HelperStatus.CANNOT_CONTINUE -> "Cannot continue"
+        }
+
+        val ack = AckPacket(
+            originalPacketId = context.packet.id,
+            alertId = "${AckPacket.LOCAL_HELP_ALERT_PREFIX}$localDeviceId",
+            uploadedBy = localDeviceId,
+            respondersNotified = 1,
+            estimatedArrival = etaText,
+            helperStatus = status,
+            helperLocation = location,
+            helperTimestamp = timestamp
+        )
+
+        val sendResult = transportManager.sendAck(ack, context.replyToDeviceId)
+        sendResult.onSuccess {
+            val statusText = status.name.replace('_', ' ')
+            val modeText = if (isBackgroundTick) "live tick" else "manual"
+            meshEventDao.insert(
+                MeshEventEntity(
+                    timestamp = timestamp,
+                    eventType = MeshEventType.ACK_RECEIVED.name,
+                    message = "Helper update [$statusText] ($modeText) for packet ${context.packet.id.take(8)}...",
+                    packetId = context.packet.id,
+                    deviceId = localDeviceId
+                )
+            )
+        }
+        return sendResult
+    }
+
+    private fun startEnRouteTracking(etaMinutes: Int) {
+        stopEnRouteTracking()
+        helperTrackingJob = viewModelScope.launch {
+            while (isActive && _activeHelperStatus.value == HelperStatus.EN_ROUTE) {
+                delay(15_000)
+                val context = receivedPacketContext(meshState.value)
+                val trackedPacketId = helperTrackingPacketId
+                if (
+                    context == null ||
+                    trackedPacketId == null ||
+                    context.packet.id != trackedPacketId
+                ) {
+                    stopEnRouteTracking()
+                    helperTrackingPacketId = null
+                    _activeHelperStatus.value = null
+                    return@launch
+                }
+                val result = sendHelperUpdateAck(
+                    context = context,
+                    status = HelperStatus.EN_ROUTE,
+                    etaMinutes = etaMinutes,
+                    isBackgroundTick = true
+                )
+                result.onFailure {
+                    _sendError.value = "Live tracking update failed: ${it.message ?: "unknown error"}"
+                }
+            }
+        }
+    }
+
+    private fun stopEnRouteTracking() {
+        helperTrackingJob?.cancel()
+        helperTrackingJob = null
+    }
+
+    override fun onCleared() {
+        stopEnRouteTracking()
+        peerCountPollerJob?.cancel()
+        peerCountPollerJob = null
+        super.onCleared()
+    }
+
+    private data class ReceivedPacketContext(
+        val packet: SosPacket,
+        val replyToDeviceId: String
+    )
+
+    private fun receivedPacketContext(state: MeshState): ReceivedPacketContext? = when (state) {
+        is MeshState.Relay -> ReceivedPacketContext(state.packet, state.receivedFromDevice)
+        is MeshState.Uploading -> state.receivedFromDevice?.let { ReceivedPacketContext(state.packet, it) }
+        is MeshState.AwaitingAck -> {
+            val packet = state.packet
+            val fromDevice = state.receivedFromDevice
+            if (packet != null && fromDevice != null) ReceivedPacketContext(packet, fromDevice) else null
+        }
+        else -> null
     }
 }

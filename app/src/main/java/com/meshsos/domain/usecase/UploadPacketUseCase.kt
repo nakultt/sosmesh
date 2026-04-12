@@ -37,13 +37,33 @@ class UploadPacketUseCase @Inject constructor(
         return try {
             val response = api.uploadSos(
                 UploadRequest(
-                    packet = packet,
+                    packet = com.meshsos.data.api.SosPacketDto(
+                        id = packet.id,
+                        type = packet.type,
+                        senderId = packet.senderId,
+                        incident = packet.incident,
+                        metadata = com.meshsos.data.api.PacketMetadataDto(
+                            createdAt = packet.metadata.createdAt,
+                            ttl = packet.metadata.ttl,
+                            maxHops = packet.metadata.maxHops,
+                            currentHops = packet.metadata.currentHops,
+                            route = packet.metadata.route.map { it.deviceId },
+                            batteryLevel = packet.metadata.batteryLevel
+                        ),
+                        uploaded = packet.uploaded,
+                        uploadTimestamp = packet.uploadTimestamp
+                    ),
                     relayDeviceId = localDeviceId,
                     relayLocation = packet.incident.location
                 )
             )
             if (response.success) Result.success(response)
             else Result.failure(Exception("Server returned success=false"))
+        } catch (e: retrofit2.HttpException) {
+            val errorBody = try { e.response()?.errorBody()?.string() } catch (_: Exception) { null }
+            val msg = if (!errorBody.isNullOrBlank()) "HTTP ${e.code()}: $errorBody" else e.message()
+            persistToPendingQueue(packet)
+            Result.failure(Exception(msg))
         } catch (e: Exception) {
             // Persist to queue for retry later
             persistToPendingQueue(packet)

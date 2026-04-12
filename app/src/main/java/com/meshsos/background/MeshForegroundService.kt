@@ -30,6 +30,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.time.Instant
 import javax.inject.Inject
 import javax.inject.Named
@@ -53,6 +55,7 @@ class MeshForegroundService : LifecycleService() {
     private var wakeLock: PowerManager.WakeLock? = null
     private var retryJob: Job? = null
     private var meshStarted = false
+    private val transportOperationLock = Mutex()
 
     // ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -69,6 +72,17 @@ class MeshForegroundService : LifecycleService() {
 
         when (intent?.action) {
             ACTION_STOP -> stopSelf()
+            ACTION_REFRESH -> {
+                if (!meshStarted) {
+                    meshStarted = true
+                    launchMesh()
+                    launchLogCollector()
+                    launchRetryWorker()
+                    launchNotificationUpdater()
+                } else {
+                    refreshTransport()
+                }
+            }
             else -> {
                 if (!meshStarted) {
                     meshStarted = true
@@ -86,7 +100,9 @@ class MeshForegroundService : LifecycleService() {
     override fun onDestroy() {
         super.onDestroy()
         lifecycleScope.launch(Dispatchers.IO) {
-            transportManager.stop()
+            transportOperationLock.withLock {
+                transportManager.stop()
+            }
         }
         wakeLock?.release()
         Log.i(TAG, "MeshForegroundService destroyed")
@@ -97,7 +113,9 @@ class MeshForegroundService : LifecycleService() {
     private fun launchMesh() {
         lifecycleScope.launch(Dispatchers.IO) {
             try {
-                transportManager.start()
+                transportOperationLock.withLock {
+                    transportManager.start()
+                }
                 Log.i(TAG, "Transport started: ${transportManager.activeTransport.value.transportName}")
 
                 // Wire incoming packets → state machine
@@ -167,6 +185,11 @@ class MeshForegroundService : LifecycleService() {
                         stateMachine.updatePeersReached(transportManager.connectedPeerCount())
                     }
                 }
+                stateMachine.setAckForwardCallback { ack, toDeviceId ->
+                    lifecycleScope.launch(Dispatchers.IO) {
+                        transportManager.sendAck(ack, toDeviceId)
+                    }
+                }
             } catch (e: Exception) {
                 Log.e(TAG, "Mesh crash: ${e.message}", e)
                 meshEventDao.insert(
@@ -174,6 +197,32 @@ class MeshForegroundService : LifecycleService() {
                         timestamp = Instant.now().epochSecond,
                         eventType = MeshEventType.ERROR.name,
                         message = "Fatal Crash: ${e.message}",
+                        packetId = null,
+                        deviceId = null
+                    )
+                )
+            }
+        }
+    }
+
+    private fun refreshTransport() {
+        lifecycleScope.launch(Dispatchers.IO) {
+            val result = runCatching {
+                transportOperationLock.withLock {
+                    transportManager.stop()
+                    transportManager.start()
+                }
+            }
+
+            result.onSuccess {
+                Log.i(TAG, "Mesh transport refreshed: ${transportManager.activeTransport.value.transportName}")
+            }.onFailure { error ->
+                Log.e(TAG, "Mesh transport refresh failed: ${error.message}", error)
+                meshEventDao.insert(
+                    MeshEventEntity(
+                        timestamp = Instant.now().epochSecond,
+                        eventType = MeshEventType.ERROR.name,
+                        message = "Refresh failed: ${error.message}",
                         packetId = null,
                         deviceId = null
                     )
@@ -295,6 +344,7 @@ class MeshForegroundService : LifecycleService() {
 
     companion object {
         const val ACTION_STOP = "com.meshsos.ACTION_STOP"
+        const val ACTION_REFRESH = "com.meshsos.ACTION_REFRESH"
 
         fun start(context: Context) {
             val intent = Intent(context, MeshForegroundService::class.java)
@@ -306,6 +356,13 @@ class MeshForegroundService : LifecycleService() {
                 action = ACTION_STOP
             }
             context.startService(intent)
+        }
+
+        fun refresh(context: Context) {
+            val intent = Intent(context, MeshForegroundService::class.java).apply {
+                action = ACTION_REFRESH
+            }
+            context.startForegroundService(intent)
         }
     }
 }

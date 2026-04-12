@@ -3,6 +3,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from typing import Optional
 import logging
+import hashlib
+from datetime import datetime
+from pymongo.errors import DuplicateKeyError
 
 from app.database import get_database, close_database
 from app.models import (
@@ -12,6 +15,7 @@ from app.models import (
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("meshsos-api")
+MAX_SERVER_ROUTE_POINTS = 20
 
 
 # ── Lifespan ───────────────────────────────────────────────────────────────────
@@ -21,7 +25,18 @@ async def lifespan(app: FastAPI):
     db = await get_database()
     # Create indexes
     await db.alerts.create_index("alertId", unique=True)
-    await db.alerts.create_index("packetId")
+    try:
+        await db.alerts.create_index("packetId", unique=True)
+    except Exception as e:
+        logger.warning(f"Could not enforce unique packetId index: {e}")
+    try:
+        await db.alerts.create_index(
+            "dedupeKey",
+            unique=True,
+            partialFilterExpression={"dedupeKey": {"$exists": True}},
+        )
+    except Exception as e:
+        logger.warning(f"Could not enforce unique dedupeKey index: {e}")
     await db.alerts.create_index("status")
     await db.alerts.create_index("createdAt")
     logger.info("MongoDB connected and indexed")
@@ -71,6 +86,13 @@ async def health():
 async def receive_sos(request: UploadRequest):
     db = await get_database()
     packet = request.packet
+    now_iso = datetime.utcnow().isoformat()
+    dedupe_key = build_dedupe_key(packet)
+    safe_route = sanitize_route(
+        route_points=packet.metadata.route,
+        max_hops=packet.metadata.maxHops,
+        default_timestamp=packet.metadata.createdAt,
+    )
 
     logger.info(
         f"SOS received: id={packet.id} sender={packet.senderId} "
@@ -78,15 +100,27 @@ async def receive_sos(request: UploadRequest):
         f"hops={packet.metadata.currentHops} relay={request.relayDeviceId}"
     )
 
-    # Check for duplicate packet ID
-    existing = await db.alerts.find_one({"packetId": packet.id})
+    # Check for duplicate packet (packet ID or content fingerprint)
+    existing = await db.alerts.find_one({
+        "$or": [
+            {"packetId": packet.id},
+            {"dedupeKey": dedupe_key},
+        ]
+    })
     if existing:
+        await register_duplicate_upload(
+            db=db,
+            alert_id=existing["alertId"],
+            relay_device_id=request.relayDeviceId,
+            now_iso=now_iso,
+        )
         logger.info(f"Duplicate packet {packet.id} — returning existing alert")
         return UploadResponse(
             success=True,
             alertId=existing["alertId"],
             respondersNotified=existing.get("respondersNotified", 0),
-            estimatedArrival=existing.get("estimatedArrival", "")
+            estimatedArrival=existing.get("estimatedArrival", ""),
+            deduplicated=True,
         )
 
     # Build alert document
@@ -97,18 +131,47 @@ async def receive_sos(request: UploadRequest):
         category=packet.incident.category,
         message=packet.incident.message,
         location=packet.incident.location,
-        route=packet.metadata.route,
+        route=safe_route,
         currentHops=packet.metadata.currentHops,
         maxHops=packet.metadata.maxHops,
         batteryLevel=packet.metadata.batteryLevel,
         relayDeviceId=request.relayDeviceId,
         relayLocation=request.relayLocation,
+        dedupeKey=dedupe_key,
+        relayDeviceIds=[request.relayDeviceId],
+        uploadAttempts=1,
+        lastRelayDeviceId=request.relayDeviceId,
+        lastReceivedAt=now_iso,
         createdAt=packet.metadata.createdAt,
         respondersNotified=1,  # simulated
         estimatedArrival="~5 min",
     )
 
-    await db.alerts.insert_one(alert.model_dump())
+    try:
+        await db.alerts.insert_one(alert.model_dump())
+    except DuplicateKeyError:
+        # Concurrent insert race: fetch winner and return dedup response.
+        winner = await db.alerts.find_one({
+            "$or": [
+                {"packetId": packet.id},
+                {"dedupeKey": dedupe_key},
+            ]
+        })
+        if winner is None:
+            raise HTTPException(status_code=500, detail="Duplicate insert race without winner document")
+        await register_duplicate_upload(
+            db=db,
+            alert_id=winner["alertId"],
+            relay_device_id=request.relayDeviceId,
+            now_iso=now_iso,
+        )
+        return UploadResponse(
+            success=True,
+            alertId=winner["alertId"],
+            respondersNotified=winner.get("respondersNotified", 0),
+            estimatedArrival=winner.get("estimatedArrival", ""),
+            deduplicated=True,
+        )
 
     logger.info(f"Alert created: {alert.alertId} for packet {packet.id}")
 
@@ -117,6 +180,7 @@ async def receive_sos(request: UploadRequest):
         alertId=alert.alertId,
         respondersNotified=alert.respondersNotified,
         estimatedArrival=alert.estimatedArrival,
+        deduplicated=False,
     )
 
 
@@ -228,6 +292,60 @@ async def delete_alert(alert_id: str):
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail=f"Alert {alert_id} not found")
     return {"success": True, "deleted": alert_id}
+
+
+def build_dedupe_key(packet) -> str:
+    """Create stable SOS fingerprint for cross-device deduplication."""
+    location = packet.incident.location
+    location_key = ""
+    if location is not None:
+        location_key = f"{round(location.lat, 4)}:{round(location.lng, 4)}"
+
+    base = "|".join([
+        packet.senderId,
+        str(packet.metadata.createdAt),
+        packet.incident.category,
+        packet.incident.severity,
+        packet.incident.message.strip().lower(),
+        location_key,
+    ])
+    return hashlib.sha256(base.encode("utf-8")).hexdigest()
+
+
+async def register_duplicate_upload(db, alert_id: str, relay_device_id: str, now_iso: str) -> None:
+    await db.alerts.update_one(
+        {"alertId": alert_id},
+        {
+            "$addToSet": {"relayDeviceIds": relay_device_id},
+            "$inc": {"uploadAttempts": 1},
+            "$set": {
+                "lastRelayDeviceId": relay_device_id,
+                "lastReceivedAt": now_iso,
+            },
+        }
+    )
+
+
+def sanitize_route(route_points, max_hops: int, default_timestamp: int):
+    route_limit = min(max(max_hops + 1, 2), MAX_SERVER_ROUTE_POINTS)
+    if not route_points:
+        return []
+
+    # Keep most recent points and normalize to plain dict for Mongo storage.
+    trimmed = route_points[-route_limit:]
+    normalized = []
+    for point in trimmed:
+        if isinstance(point, str):
+            normalized.append({
+                "deviceId": point,
+                "location": None,
+                "timestamp": default_timestamp,
+            })
+        elif hasattr(point, "model_dump"):
+            normalized.append(point.model_dump())
+        elif isinstance(point, dict):
+            normalized.append(point)
+    return normalized
 
 
 # ── Run ────────────────────────────────────────────────────────────────────────
