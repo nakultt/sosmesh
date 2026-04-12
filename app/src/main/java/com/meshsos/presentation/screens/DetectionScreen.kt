@@ -8,9 +8,6 @@ import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -45,6 +42,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
@@ -107,7 +105,7 @@ private fun CameraPermissionRequest(onRequestPermission: () -> Unit) {
                 modifier = Modifier.padding(28.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                Text("📷", fontSize = 48.sp)
+                Text("\uD83D\uDCF7", fontSize = 48.sp)
                 Spacer(Modifier.height(16.dp))
                 Text(
                     "Camera Access Required",
@@ -264,71 +262,68 @@ private fun DetectionContent(viewModel: DetectionViewModel) {
                 )
             }
 
-            // FPS badge
-            AnimatedVisibility(
-                visible = isRunning,
-                enter = fadeIn(),
-                exit = fadeOut(),
-                modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .padding(12.dp)
-            ) {
-                Text(
-                    text = "FPS: ${"%.1f".format(fps)}",
+            // FPS badge (top-right) — using Box + if instead of AnimatedVisibility in BoxScope
+            if (isRunning) {
+                Box(
                     modifier = Modifier
-                        .background(Color.Black.copy(alpha = 0.55f), RoundedCornerShape(8.dp))
-                        .padding(horizontal = 10.dp, vertical = 4.dp),
-                    color = Color.White,
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.Bold
-                )
-            }
-
-            // Detection count badge
-            AnimatedVisibility(
-                visible = isRunning && detections.isNotEmpty(),
-                enter = fadeIn(),
-                exit = fadeOut(),
-                modifier = Modifier
-                    .align(Alignment.TopStart)
-                    .padding(12.dp)
-            ) {
-                Text(
-                    text = "${detections.size} detections",
-                    modifier = Modifier
-                        .background(MeshTeal.copy(alpha = 0.75f), RoundedCornerShape(8.dp))
-                        .padding(horizontal = 10.dp, vertical = 4.dp),
-                    color = Color.White,
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.SemiBold
-                )
-            }
-
-            // Live violation banner
-            AnimatedVisibility(
-                visible = isRunning && violations.isNotEmpty(),
-                enter = fadeIn(),
-                exit = fadeOut(),
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .padding(12.dp)
-            ) {
-                Row(
-                    modifier = Modifier
-                        .background(SosRed.copy(alpha = 0.85f), RoundedCornerShape(10.dp))
-                        .padding(horizontal = 14.dp, vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                        .align(Alignment.TopEnd)
+                        .padding(12.dp)
                 ) {
-                    Text("⚠", fontSize = 16.sp)
-                    Spacer(Modifier.width(8.dp))
-                    Column {
-                        violations.take(3).forEach { v ->
-                            Text(
-                                "${v.type.replace('_', ' ').uppercase()} (${"%.0f".format(v.confidence * 100)}%)",
-                                color = Color.White,
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.Bold
-                            )
+                    Text(
+                        text = "FPS: ${"%.1f".format(fps)}",
+                        modifier = Modifier
+                            .background(Color.Black.copy(alpha = 0.55f), RoundedCornerShape(8.dp))
+                            .padding(horizontal = 10.dp, vertical = 4.dp),
+                        color = Color.White,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+
+            // Detection count badge (top-left)
+            if (isRunning && detections.isNotEmpty()) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .padding(12.dp)
+                ) {
+                    Text(
+                        text = "${detections.size} detections",
+                        modifier = Modifier
+                            .background(MeshTeal.copy(alpha = 0.75f), RoundedCornerShape(8.dp))
+                            .padding(horizontal = 10.dp, vertical = 4.dp),
+                        color = Color.White,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+            }
+
+            // Live violation banner (bottom-center)
+            if (isRunning && violations.isNotEmpty()) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(12.dp)
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .background(SosRed.copy(alpha = 0.85f), RoundedCornerShape(10.dp))
+                            .padding(horizontal = 14.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("\u26A0", fontSize = 16.sp)
+                        Spacer(Modifier.width(8.dp))
+                        Column {
+                            violations.take(3).forEach { v ->
+                                Text(
+                                    "${v.type.replace('_', ' ').uppercase()} (${"%.0f".format(v.confidence * 100)}%)",
+                                    color = Color.White,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
                         }
                     }
                 }
@@ -344,7 +339,7 @@ private fun DetectionContent(viewModel: DetectionViewModel) {
                 ) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         Text(
-                            text = modelError ?: "Loading NCNN model…",
+                            text = modelError ?: "Loading NCNN model\u2026",
                             color = if (modelError != null) SosRed else Color.White,
                             fontSize = 14.sp,
                             fontWeight = FontWeight.Medium,
@@ -384,7 +379,7 @@ private fun DetectionContent(viewModel: DetectionViewModel) {
                     )
                     StatItem(
                         "Last",
-                        lastViolation?.type?.replace('_', ' ') ?: "—",
+                        lastViolation?.type?.replace('_', ' ') ?: "\u2014",
                         SosRed
                     )
                 }
@@ -406,7 +401,7 @@ private fun DetectionContent(viewModel: DetectionViewModel) {
                 shape = RoundedCornerShape(14.dp)
             ) {
                 Text(
-                    text = if (isRunning) "⏹  Stop Detection" else "▶  Start Detection",
+                    text = if (isRunning) "\u23F9  Stop Detection" else "\u25B6  Start Detection",
                     fontWeight = FontWeight.Bold,
                     fontSize = 16.sp
                 )
@@ -473,7 +468,7 @@ private fun BoundingBoxOverlay(
                 style = Stroke(width = 3f)
             )
 
-            // Draw label background
+            // Draw label background + text
             val labelText = "${det.className} ${"%.0f".format(det.confidence * 100)}%"
             drawIntoCanvas { canvas ->
                 val textPaint = Paint().apply {

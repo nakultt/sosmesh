@@ -94,7 +94,7 @@ class ViolationAnalyzer {
                 val boxes = listOf(bike.toBoundingBox()) + bikeRiders.map { it.toBoundingBox() }
                 violations.add(Violation(
                     type = Violation.TRIPLE_RIDING,
-                    confidence = combined.round3(),
+                    confidence = ((combined * 1000).toInt() / 1000f),
                     boundingBoxes = boxes
                 ))
             }
@@ -105,7 +105,7 @@ class ViolationAnalyzer {
             val best = animals.maxByOrNull { it.confidence }!!
             violations.add(Violation(
                 type = Violation.ANIMAL_CROSSING,
-                confidence = best.confidence.round3(),
+                confidence = ((best.confidence * 1000).toInt() / 1000f),
                 boundingBoxes = animals.map { it.toBoundingBox() }
             ))
         }
@@ -119,7 +119,7 @@ class ViolationAnalyzer {
         val x: Float, val y: Float, val w: Float, val h: Float,
         val label: String, val confidence: Float
     ) {
-        fun toBoundingBox() = BoundingBox(x, y, w, h, label, confidence.round3())
+        fun toBoundingBox() = BoundingBox(x, y, w, h, label, ((confidence * 1000).toInt() / 1000f))
     }
 
     private fun Detection.toBoxInfo() = BoxInfo(
@@ -154,5 +154,4 @@ class ViolationAnalyzer {
                riderBottom <= (bikeBottom + bike.h * 0.6f)
     }
 
-    private fun Float.round3() = (this * 1000).toInt() / 1000f
 }
