@@ -17,6 +17,17 @@ android {
         versionCode = 5
         versionName = "0.5.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        ndk {
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a")
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
     }
 
     buildTypes {
@@ -51,6 +62,11 @@ android {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
+    }
+
+    // Keep NCNN model assets uncompressed for mmap loading
+    androidResources {
+        noCompress += listOf("ncnn.bin", "ncnn.param")
     }
 }
 
@@ -110,4 +126,33 @@ dependencies {
 
     // Permissions helper
     implementation(libs.accompanist.permissions)
+
+    // CameraX (live preview + image analysis for detection)
+    implementation(libs.camerax.core)
+    implementation(libs.camerax.lifecycle)
+    implementation(libs.camerax.view)
+    implementation(libs.camerax.camera2)
+}
+
+// ── Auto-download NCNN pre-built SDK before native build ─────────────────────
+val downloadNcnnSdk by tasks.registering {
+    val sdkDir = file("src/main/cpp/ncnn-sdk")
+    outputs.dir(sdkDir)
+    doLast {
+        if (!sdkDir.exists()) {
+            val ver = "20240820"
+            val url = "https://github.com/Tencent/ncnn/releases/download/$ver/ncnn-$ver-android.zip"
+            val zip = file("src/main/cpp/ncnn-sdk.zip")
+            logger.lifecycle("Downloading NCNN Android SDK v$ver …")
+            ant.invokeMethod("get", mapOf("src" to url, "dest" to zip))
+            logger.lifecycle("Extracting …")
+            copy { from(zipTree(zip)); into(file("src/main/cpp")) }
+            file("src/main/cpp/ncnn-$ver-android").renameTo(sdkDir)
+            zip.delete()
+            logger.lifecycle("NCNN SDK ready at $sdkDir")
+        }
+    }
+}
+tasks.matching { it.name.contains("externalNativeBuild", ignoreCase = true) }.configureEach {
+    dependsOn(downloadNcnnSdk)
 }

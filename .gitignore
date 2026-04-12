@@ -82,3 +82,10 @@ lint/tmp/
 
 # macOS
 .DS_Store
+
+# NCNN pre-built SDK (auto-downloaded during build)
+app/src/main/cpp/ncnn-sdk/
+app/src/main/cpp/ncnn-sdk.zip
+
+# Large NCNN model binary (keep param, gitignore the ~10MB bin)
+app/src/main/assets/model.ncnn.bin

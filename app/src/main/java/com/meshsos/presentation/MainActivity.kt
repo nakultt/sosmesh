@@ -41,6 +41,7 @@ import com.meshsos.presentation.screens.RelayLogScreen
 import com.meshsos.presentation.screens.SettingsScreen
 import com.meshsos.presentation.screens.SosScreen
 import com.meshsos.presentation.screens.DebugConsoleScreen
+import com.meshsos.presentation.screens.DetectionScreen
 import com.meshsos.presentation.theme.MeshSosTheme
 import com.meshsos.presentation.theme.MeshTeal
 import com.meshsos.presentation.theme.ThemePreferences
@@ -218,6 +219,30 @@ class MainActivity : ComponentActivity() {
                                     indicatorColor = indicatorColor
                                 )
                             )
+                            NavigationBarItem(
+                                selected = selectedTab == 5,
+                                onClick = { selectedTab = 5 },
+                                icon = {
+                                    Icon(
+                                        Icons.Default.Search,
+                                        contentDescription = "Detect"
+                                    )
+                                },
+                                label = {
+                                    Text(
+                                        "Detect",
+                                        fontWeight = if (selectedTab == 5) FontWeight.Bold else FontWeight.Normal,
+                                        fontSize = 12.sp
+                                    )
+                                },
+                                colors = NavigationBarItemDefaults.colors(
+                                    selectedIconColor = selectedColor,
+                                    selectedTextColor = selectedColor,
+                                    unselectedIconColor = unselectedColor,
+                                    unselectedTextColor = unselectedColor,
+                                    indicatorColor = indicatorColor
+                                )
+                            )
                         }
                     }
                 ) { padding ->
@@ -232,6 +257,7 @@ class MainActivity : ComponentActivity() {
                                 themePreferences = themePreferences,
                                 isDarkMode = isDarkMode
                             )
+                            5 -> DetectionScreen()
                         }
                     }
                 }
@@ -252,6 +278,7 @@ class MainActivity : ComponentActivity() {
                 add(Manifest.permission.NEARBY_WIFI_DEVICES)
                 add(Manifest.permission.POST_NOTIFICATIONS)
             }
+            add(Manifest.permission.CAMERA)
         }
 
         val missingPermissions = requiredPermissions.filterNot(::isPermissionGranted)

@@ -1,0 +1,30 @@
+description: Ultralytics YOLO26n model trained on data.yaml
+author: Ultralytics
+date: '2026-04-12T22:10:20.301059'
+version: 8.4.37
+license: AGPL-3.0 License (https://ultralytics.com/license)
+docs: https://docs.ultralytics.com
+stride: 32
+task: detect
+batch: 1
+imgsz:
+- 640
+- 640
+names:
+  0: driver_with_helmet
+  1: bike
+  2: driver
+  3: passenger_with_helemt
+  4: passenger
+  5: driver_without_helmet
+  6: passenger_without_helemt
+  7: cow
+  8: horse
+  9: elephant
+  10: pothole
+  11: wheeling
+args:
+  batch: 1
+  half: false
+channels: 3
+end2end: false
