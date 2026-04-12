@@ -18,8 +18,22 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
+
+/**
+ * Sent violation log entry — shown in the UI so user can see upload status.
+ */
+data class SentViolationEntry(
+    val type: String,
+    val confidence: Float,
+    val timestamp: String,
+    val success: Boolean,
+    val errorMsg: String? = null
+)
 
 @HiltViewModel
 class DetectionViewModel @Inject constructor(
@@ -32,6 +46,7 @@ class DetectionViewModel @Inject constructor(
     companion object {
         private const val TAG = "DetectionVM"
         private const val DETECTION_INTERVAL_MS = 1000L // match Python 1 s
+        private val TIME_FMT = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
     }
 
     // ── Exposed UI state ────────────────────────────────────────────────────
@@ -57,6 +72,9 @@ class DetectionViewModel @Inject constructor(
     private val _violationsSent = MutableStateFlow(0)
     val violationsSent: StateFlow<Int> = _violationsSent.asStateFlow()
 
+    private val _violationsFailed = MutableStateFlow(0)
+    val violationsFailed: StateFlow<Int> = _violationsFailed.asStateFlow()
+
     private val _lastViolation = MutableStateFlow<Violation?>(null)
     val lastViolation: StateFlow<Violation?> = _lastViolation.asStateFlow()
 
@@ -66,15 +84,19 @@ class DetectionViewModel @Inject constructor(
     private val _imageHeight = MutableStateFlow(1)
     val imageHeight: StateFlow<Int> = _imageHeight.asStateFlow()
 
+    // Sent violations log (keeps last 30 — success + failures)
+    private val _sentLog = MutableStateFlow<List<SentViolationEntry>>(emptyList())
+    val sentLog: StateFlow<List<SentViolationEntry>> = _sentLog.asStateFlow()
+
+    // Last upload error (for UI toast)
+    private val _lastUploadError = MutableStateFlow<String?>(null)
+    val lastUploadError: StateFlow<String?> = _lastUploadError.asStateFlow()
+
     // ── Internal ─────────────────────────────────────────────────────────────
 
     private val isProcessing = AtomicBoolean(false)
     private var lastInferenceTime = 0L
     private val violationAnalyzer = ViolationAnalyzer()
-
-    // Recent violations log (keeps last 20)
-    private val _recentViolations = MutableStateFlow<List<Violation>>(emptyList())
-    val recentViolations: StateFlow<List<Violation>> = _recentViolations.asStateFlow()
 
     // ── Init ────────────────────────────────────────────────────────────────
 
@@ -155,12 +177,46 @@ class DetectionViewModel @Inject constructor(
                                     gpsLat = loc?.lat ?: 0.0,
                                     gpsLng = loc?.lng ?: 0.0
                                 )
+                                val ts = TIME_FMT.format(Date())
                                 if (ok) {
                                     _violationsSent.value++
                                     _lastViolation.value = violation
-                                    _recentViolations.value = (listOf(violation) +
-                                            _recentViolations.value).take(20)
+                                    _sentLog.value = (listOf(
+                                        SentViolationEntry(
+                                            type = violation.type,
+                                            confidence = violation.confidence,
+                                            timestamp = ts,
+                                            success = true
+                                        )
+                                    ) + _sentLog.value).take(30)
+                                    Log.i(TAG, "✅ Sent ${violation.type} to backend")
+                                } else {
+                                    _violationsFailed.value++
+                                    _sentLog.value = (listOf(
+                                        SentViolationEntry(
+                                            type = violation.type,
+                                            confidence = violation.confidence,
+                                            timestamp = ts,
+                                            success = false,
+                                            errorMsg = "Backend rejected"
+                                        )
+                                    ) + _sentLog.value).take(30)
+                                    Log.w(TAG, "❌ Failed to send ${violation.type}")
                                 }
+                            } catch (e: Exception) {
+                                _violationsFailed.value++
+                                val ts = TIME_FMT.format(Date())
+                                _lastUploadError.value = e.message
+                                _sentLog.value = (listOf(
+                                    SentViolationEntry(
+                                        type = violation.type,
+                                        confidence = violation.confidence,
+                                        timestamp = ts,
+                                        success = false,
+                                        errorMsg = e.message?.take(60)
+                                    )
+                                ) + _sentLog.value).take(30)
+                                Log.e(TAG, "❌ Upload exception: ${e.message}")
                             } finally {
                                 uploadBitmap.recycle()
                             }

@@ -1,6 +1,8 @@
 package com.meshsos.presentation.screens
 
 import android.Manifest
+import android.graphics.Bitmap
+import android.graphics.Matrix
 import android.graphics.Paint
 import android.util.Size
 import androidx.camera.core.CameraSelector
@@ -65,6 +67,7 @@ import com.meshsos.presentation.theme.SafeGreen
 import com.meshsos.presentation.theme.SosRed
 import com.meshsos.presentation.theme.WarnAmber
 import com.meshsos.presentation.viewmodels.DetectionViewModel
+import com.meshsos.presentation.viewmodels.SentViolationEntry
 import java.util.concurrent.Executors
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -135,6 +138,19 @@ private fun CameraPermissionRequest(onRequestPermission: () -> Unit) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+//  Bitmap rotation utility (needed because CameraX ImageAnalysis delivers
+//  frames in sensor orientation, which is landscape on most devices)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+private fun rotateBitmap(source: Bitmap, degrees: Int): Bitmap {
+    if (degrees == 0) return source
+    val matrix = Matrix().apply { postRotate(degrees.toFloat()) }
+    val rotated = Bitmap.createBitmap(source, 0, 0, source.width, source.height, matrix, true)
+    if (rotated !== source) source.recycle()
+    return rotated
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 //  Main detection content
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -148,12 +164,13 @@ private fun DetectionContent(viewModel: DetectionViewModel) {
     val violations by viewModel.violations.collectAsState()
     val fps by viewModel.fps.collectAsState()
     val violationsSent by viewModel.violationsSent.collectAsState()
+    val violationsFailed by viewModel.violationsFailed.collectAsState()
     val modelLoaded by viewModel.modelLoaded.collectAsState()
     val modelError by viewModel.modelError.collectAsState()
     val lastViolation by viewModel.lastViolation.collectAsState()
     val imageWidth by viewModel.imageWidth.collectAsState()
     val imageHeight by viewModel.imageHeight.collectAsState()
-    val recentViolations by viewModel.recentViolations.collectAsState()
+    val sentLog by viewModel.sentLog.collectAsState()
 
     val analysisExecutor = remember { Executors.newSingleThreadExecutor() }
     val previewView = remember { PreviewView(context) }
@@ -179,20 +196,20 @@ private fun DetectionContent(viewModel: DetectionViewModel) {
                         try {
                             val w = imageProxy.width
                             val h = imageProxy.height
+                            val rotationDegrees = imageProxy.imageInfo.rotationDegrees
                             val buffer = imageProxy.planes[0].buffer
                             val rowStride = imageProxy.planes[0].rowStride
                             val pixelStride = imageProxy.planes[0].pixelStride
 
-                            val bitmap = android.graphics.Bitmap.createBitmap(
-                                w, h, android.graphics.Bitmap.Config.ARGB_8888
+                            val rawBitmap = Bitmap.createBitmap(
+                                w, h, Bitmap.Config.ARGB_8888
                             )
 
                             // Handle row padding if present
                             if (rowStride == w * pixelStride) {
                                 buffer.rewind()
-                                bitmap.copyPixelsFromBuffer(buffer)
+                                rawBitmap.copyPixelsFromBuffer(buffer)
                             } else {
-                                // Row stride has padding — copy row by row
                                 val rowBytes = w * pixelStride
                                 val rowBuffer = ByteArray(rowStride)
                                 val pixelBuffer = java.nio.ByteBuffer.allocate(w * h * 4)
@@ -202,8 +219,12 @@ private fun DetectionContent(viewModel: DetectionViewModel) {
                                     pixelBuffer.put(rowBuffer, 0, rowBytes)
                                 }
                                 pixelBuffer.rewind()
-                                bitmap.copyPixelsFromBuffer(pixelBuffer)
+                                rawBitmap.copyPixelsFromBuffer(pixelBuffer)
                             }
+
+                            // Rotate bitmap to match display orientation
+                            // (sensor is landscape; portrait mode = 90° rotation)
+                            val bitmap = rotateBitmap(rawBitmap, rotationDegrees)
 
                             viewModel.processFrame(bitmap)
                         } catch (_: Exception) {
@@ -262,7 +283,7 @@ private fun DetectionContent(viewModel: DetectionViewModel) {
                 )
             }
 
-            // FPS badge (top-right) — using Box + if instead of AnimatedVisibility in BoxScope
+            // FPS badge (top-right)
             if (isRunning) {
                 Box(
                     modifier = Modifier
@@ -355,7 +376,7 @@ private fun DetectionContent(viewModel: DetectionViewModel) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 12.dp)
+                .padding(horizontal = 16.dp, vertical = 10.dp)
         ) {
             // Stats row
             Card(
@@ -368,10 +389,11 @@ private fun DetectionContent(viewModel: DetectionViewModel) {
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(14.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
+                    horizontalArrangement = Arrangement.SpaceEvenly,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    StatItem("Violations Sent", "$violationsSent", SafeGreen)
+                    StatItem("Sent", "$violationsSent", SafeGreen)
+                    StatItem("Failed", "$violationsFailed", SosRed)
                     StatItem(
                         "Status",
                         if (isRunning) "Active" else "Idle",
@@ -380,19 +402,19 @@ private fun DetectionContent(viewModel: DetectionViewModel) {
                     StatItem(
                         "Last",
                         lastViolation?.type?.replace('_', ' ') ?: "\u2014",
-                        SosRed
+                        MeshTeal
                     )
                 }
             }
 
-            Spacer(Modifier.height(10.dp))
+            Spacer(Modifier.height(8.dp))
 
             // Start/Stop button
             Button(
                 onClick = { viewModel.toggleDetection() },
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(52.dp),
+                    .height(50.dp),
                 enabled = modelLoaded,
                 colors = ButtonDefaults.buttonColors(
                     containerColor = if (isRunning) SosRed else MeshTeal,
@@ -407,22 +429,22 @@ private fun DetectionContent(viewModel: DetectionViewModel) {
                 )
             }
 
-            Spacer(Modifier.height(10.dp))
+            Spacer(Modifier.height(8.dp))
 
-            // Recent violations log
-            if (recentViolations.isNotEmpty()) {
+            // Sent violations log
+            if (sentLog.isNotEmpty()) {
                 Text(
-                    "Recent Violations",
+                    "Upload Log",
                     color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f),
                     fontSize = 12.sp,
                     fontWeight = FontWeight.SemiBold
                 )
-                Spacer(Modifier.height(6.dp))
+                Spacer(Modifier.height(4.dp))
                 LazyColumn(
-                    modifier = Modifier.height(100.dp)
+                    modifier = Modifier.height(110.dp)
                 ) {
-                    items(recentViolations) { violation ->
-                        ViolationLogItem(violation)
+                    items(sentLog) { entry ->
+                        SentViolationLogItem(entry)
                     }
                 }
             }
@@ -523,32 +545,55 @@ private fun StatItem(label: String, value: String, accent: Color) {
 }
 
 @Composable
-private fun ViolationLogItem(violation: Violation) {
+private fun SentViolationLogItem(entry: SentViolationEntry) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .padding(vertical = 3.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
+        // Status dot
         Box(
             modifier = Modifier
                 .size(8.dp)
                 .clip(CircleShape)
-                .background(SosRed)
+                .background(if (entry.success) SafeGreen else SosRed)
         )
         Spacer(Modifier.width(8.dp))
+
+        // Time
         Text(
-            violation.type.replace('_', ' '),
+            entry.timestamp,
+            color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.4f),
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Medium
+        )
+        Spacer(Modifier.width(8.dp))
+
+        // Violation type
+        Text(
+            entry.type.replace('_', ' '),
             color = MaterialTheme.colorScheme.onBackground,
             fontSize = 13.sp,
             fontWeight = FontWeight.Medium,
             modifier = Modifier.weight(1f)
         )
-        Text(
-            "${"%.0f".format(violation.confidence * 100)}%",
-            color = WarnAmber,
-            fontSize = 12.sp,
-            fontWeight = FontWeight.SemiBold
-        )
+
+        // Confidence or error
+        if (entry.success) {
+            Text(
+                "\u2705 ${"%.0f".format(entry.confidence * 100)}%",
+                color = SafeGreen,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold
+            )
+        } else {
+            Text(
+                "\u274C ${entry.errorMsg ?: "failed"}",
+                color = SosRed,
+                fontSize = 11.sp,
+                maxLines = 1
+            )
+        }
     }
 }

@@ -113,7 +113,7 @@ object AppModule {
     @Provides
     @Singleton
     @Named("pacerBackendUrl")
-    fun providePacerBackendUrl(): String = "http://localhost:8000/"
+    fun providePacerBackendUrl(): String = "https://drive-safety.onrender.com/"
 
     @Provides
     @Singleton
