@@ -8,7 +8,15 @@ import android.location.LocationManager
 import android.os.Build
 import androidx.core.content.ContextCompat
 
-internal object TransportCapabilityChecker {
+/**
+ * Single source of truth for what each transport needs at runtime.
+ *
+ *  - BLE (API 31+): BLUETOOTH_SCAN/ADVERTISE/CONNECT (scan is declared neverForLocation)
+ *  - BLE (API <= 30): ACCESS_FINE_LOCATION and Location services on
+ *  - Nearby: the BLE permissions, plus ACCESS_FINE_LOCATION (API <= 32)
+ *    or NEARBY_WIFI_DEVICES (API 33+), and Location services on for API <= 32
+ */
+object TransportCapabilityChecker {
 
     fun isBleAvailable(context: Context): Boolean = bleUnavailableReason(context) == null
 
@@ -17,84 +25,88 @@ internal object TransportCapabilityChecker {
     fun bleUnavailableReason(context: Context): String? {
         val missingPermissions = missingBlePermissions(context)
         if (missingPermissions.isNotEmpty()) {
-            return "BLE unavailable: missing ${missingPermissions.joinToString()}"
+            return "BLE unavailable: missing ${missingPermissions.joinToString { it.shortPermissionName() }}"
         }
-
-        if (!isBluetoothEnabled(context)) {
-            return "BLE unavailable: Bluetooth is turned off"
+        if (!isBluetoothSupported(context)) return "BLE unavailable: device has no Bluetooth"
+        if (!isBluetoothEnabled(context)) return "BLE unavailable: Bluetooth is turned off"
+        if (bleNeedsLocationServices() && !isLocationServicesEnabled(context)) {
+            return "BLE unavailable: Location services are turned off"
         }
-
-        if (requiresLocationServicesForScan() && !isLocationServicesEnabled(context)) {
-            return "BLE unavailable: device Location service is turned off"
-        }
-
         return null
     }
 
     fun nearbyUnavailableReason(context: Context): String? {
         val missingPermissions = missingNearbyPermissions(context)
         if (missingPermissions.isNotEmpty()) {
-            return "Nearby unavailable: missing ${missingPermissions.joinToString()}"
+            return "Nearby unavailable: missing ${missingPermissions.joinToString { it.shortPermissionName() }}"
         }
-
-        if (!isBluetoothEnabled(context)) {
-            return "Nearby unavailable: Bluetooth is turned off"
+        if (!isBluetoothSupported(context)) return "Nearby unavailable: device has no Bluetooth"
+        if (!isBluetoothEnabled(context)) return "Nearby unavailable: Bluetooth is turned off"
+        if (nearbyNeedsLocationServices() && !isLocationServicesEnabled(context)) {
+            return "Nearby unavailable: Location services are turned off"
         }
-
-        if (requiresLocationServicesForScan() && !isLocationServicesEnabled(context)) {
-            return "Nearby unavailable: device Location service is turned off"
-        }
-
         return null
     }
 
-    private fun missingBlePermissions(context: Context): List<String> = buildList {
+    /** Every runtime permission the app asks for, in request order. */
+    fun requestedPermissions(): List<String> = buildList {
+        add(Manifest.permission.ACCESS_FINE_LOCATION)
+        add(Manifest.permission.ACCESS_COARSE_LOCATION)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            if (!hasPermission(context, Manifest.permission.BLUETOOTH_SCAN)) {
-                add("BLUETOOTH_SCAN")
-            }
-            if (!hasPermission(context, Manifest.permission.BLUETOOTH_ADVERTISE)) {
-                add("BLUETOOTH_ADVERTISE")
-            }
-            if (!hasPermission(context, Manifest.permission.BLUETOOTH_CONNECT)) {
-                add("BLUETOOTH_CONNECT")
-            }
-        } else {
-            if (!hasLocationPermission(context)) {
-                add("ACCESS_FINE_LOCATION/ACCESS_COARSE_LOCATION")
-            }
+            add(Manifest.permission.BLUETOOTH_SCAN)
+            add(Manifest.permission.BLUETOOTH_ADVERTISE)
+            add(Manifest.permission.BLUETOOTH_CONNECT)
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            add(Manifest.permission.NEARBY_WIFI_DEVICES)
+            add(Manifest.permission.POST_NOTIFICATIONS)
         }
     }
 
-    private fun missingNearbyPermissions(context: Context): List<String> = buildList {
-        addAll(missingBlePermissions(context))
+    /** Permissions required for at least the mesh transports to work. */
+    fun missingMeshPermissions(context: Context): List<String> =
+        (missingBlePermissions(context) + missingNearbyPermissions(context)).distinct()
 
-        if (!hasLocationPermission(context)) {
-            add("ACCESS_FINE_LOCATION/ACCESS_COARSE_LOCATION")
+    fun missingBlePermissions(context: Context): List<String> = buildList {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            if (!hasPermission(context, Manifest.permission.BLUETOOTH_SCAN)) add(Manifest.permission.BLUETOOTH_SCAN)
+            if (!hasPermission(context, Manifest.permission.BLUETOOTH_ADVERTISE)) add(Manifest.permission.BLUETOOTH_ADVERTISE)
+            if (!hasPermission(context, Manifest.permission.BLUETOOTH_CONNECT)) add(Manifest.permission.BLUETOOTH_CONNECT)
+        } else if (!hasPermission(context, Manifest.permission.ACCESS_FINE_LOCATION)) {
+            add(Manifest.permission.ACCESS_FINE_LOCATION)
         }
+    }
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-            !hasPermission(context, Manifest.permission.NEARBY_WIFI_DEVICES)
-        ) {
-            add("NEARBY_WIFI_DEVICES")
+    fun missingNearbyPermissions(context: Context): List<String> = buildList {
+        addAll(missingBlePermissions(context))
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (!hasPermission(context, Manifest.permission.NEARBY_WIFI_DEVICES)) {
+                add(Manifest.permission.NEARBY_WIFI_DEVICES)
+            }
+        } else if (!hasPermission(context, Manifest.permission.ACCESS_FINE_LOCATION)) {
+            add(Manifest.permission.ACCESS_FINE_LOCATION)
         }
     }.distinct()
 
-    private fun hasLocationPermission(context: Context): Boolean =
+    fun hasLocationPermission(context: Context): Boolean =
         hasPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) ||
             hasPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION)
 
-    private fun hasPermission(context: Context, permission: String): Boolean =
+    fun hasPermission(context: Context, permission: String): Boolean =
         ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED
 
-    private fun isBluetoothEnabled(context: Context): Boolean =
-        context.getSystemService(BluetoothManager::class.java)?.adapter?.isEnabled == true
+    fun isBluetoothSupported(context: Context): Boolean =
+        context.getSystemService(BluetoothManager::class.java)?.adapter != null
 
-    private fun isLocationServicesEnabled(context: Context): Boolean {
+    fun isBluetoothEnabled(context: Context): Boolean =
+        runCatching { context.getSystemService(BluetoothManager::class.java)?.adapter?.isEnabled == true }
+            .getOrDefault(false)
+
+    fun isLocationServicesEnabled(context: Context): Boolean {
         val locationManager = context.getSystemService(LocationManager::class.java) ?: return false
-        return try {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             locationManager.isLocationEnabled
-        } catch (_: Throwable) {
+        } else {
             val gpsEnabled = runCatching {
                 locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)
             }.getOrDefault(false)
@@ -105,6 +117,10 @@ internal object TransportCapabilityChecker {
         }
     }
 
-    private fun requiresLocationServicesForScan(): Boolean =
-        Build.VERSION.SDK_INT <= Build.VERSION_CODES.S_V2
+    /** Location services must be on for BLE scans to return results before Android 12. */
+    fun bleNeedsLocationServices(): Boolean = Build.VERSION.SDK_INT <= Build.VERSION_CODES.R
+
+    fun nearbyNeedsLocationServices(): Boolean = Build.VERSION.SDK_INT <= Build.VERSION_CODES.S_V2
+
+    fun String.shortPermissionName(): String = substringAfterLast('.')
 }

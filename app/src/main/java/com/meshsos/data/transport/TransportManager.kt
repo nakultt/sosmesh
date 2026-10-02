@@ -1,24 +1,53 @@
 package com.meshsos.data.transport
 
+import android.bluetooth.BluetoothAdapter
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
-import android.net.wifi.p2p.WifiP2pManager
+import android.location.LocationManager
 import android.util.Log
+import androidx.core.content.ContextCompat
+import com.meshsos.domain.model.AckPacket
+import com.meshsos.domain.model.SosPacket
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.merge
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import javax.inject.Inject
 import javax.inject.Singleton
 
 private const val TAG = "TransportManager"
+private const val HEALTH_CHECK_INTERVAL_MS = 15_000L
 
+/** Snapshot of one transport for the UI. */
+data class TransportStatus(
+    val name: String,
+    val shortName: String,
+    val running: Boolean,
+    val peerCount: Int,
+    val error: String?
+)
+
+/**
+ * Runs every available transport at the same time (Nearby Connections + pure BLE GATT)
+ * so devices can find each other no matter which radios/permissions each one has.
+ * Packets are sent on all transports; receivers deduplicate by packet id.
+ */
 @Singleton
 class TransportManager @Inject constructor(
     @ApplicationContext private val context: Context,
@@ -26,138 +55,166 @@ class TransportManager @Inject constructor(
     private val bleGattTransport: BleGattTransport
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val transports: List<Transport> = listOf(nearbyTransport, bleGattTransport)
+    private val lifecycleLock = Mutex()
+    private var healthJob: Job? = null
+    private var receiverRegistered = false
 
-    private val _activeTransport = MutableStateFlow<Transport>(nearbyTransport)
-    val activeTransport: StateFlow<Transport> = _activeTransport.asStateFlow()
+    private val _isRunning = MutableStateFlow(false)
+    val isRunning: StateFlow<Boolean> = _isRunning.asStateFlow()
 
-    val currentTransport get() = _activeTransport.value
+    val incomingPackets: Flow<IncomingPacket> = merge(*transports.map { it.incomingPackets }.toTypedArray())
+    val incomingAcks: Flow<IncomingAck> = merge(*transports.map { it.incomingAcks }.toTypedArray())
+    val peerEvents: Flow<PeerEvent> = merge(*transports.map { it.peerEvents }.toTypedArray())
 
-    private var isRunning = false
+    /** Unique peers across all transports, merged by mesh device id. */
+    val peers: StateFlow<List<PeerInfo>> = combine(transports.map { it.peers }) { perTransport ->
+        perTransport.toList()
+            .flatMap { it }
+            .groupBy { it.peerId }
+            .map { (peerId, entries) ->
+                PeerInfo(
+                    peerId = peerId,
+                    name = entries.firstOrNull { it.name != peerId }?.name ?: peerId,
+                    transports = entries.flatMap { it.transports }.toSortedSet()
+                )
+            }
+            .sortedBy { it.name }
+    }.stateIn(scope, SharingStarted.Eagerly, emptyList())
 
-    // ── Start with best available transport ───────────────────────────────────
+    val transportStatuses: StateFlow<List<TransportStatus>> = combine(
+        transports.flatMap { listOf(it.isRunning, it.peers, it.lastError) }
+    ) { _ ->
+        transports.map { transport ->
+            TransportStatus(
+                name = transport.transportName,
+                shortName = transport.shortName,
+                running = transport.isRunning.value,
+                peerCount = transport.peers.value.size,
+                error = transport.lastError.value
+            )
+        }
+    }.stateIn(scope, SharingStarted.Eagerly, emptyList())
+
+    /** Short label for the status bar, e.g. "Nearby + BLE" or "Offline". */
+    val activeTransportLabel: StateFlow<String> = combine(transports.map { it.isRunning }) { running ->
+        val active = transports.filterIndexed { index, _ -> running[index] }.map { it.shortName }
+        if (active.isEmpty()) "Offline" else active.joinToString(" + ")
+    }.stateIn(scope, SharingStarted.Eagerly, "Offline")
+
+    // ── Lifecycle ─────────────────────────────────────────────────────────────
 
     suspend fun start() {
-        isRunning = true
-        registerWifiP2pReceiver()
-        val preferred = selectBestTransport()
-        val started = startWithFallback(preferred)
-        _activeTransport.value = started
-        Log.i(TAG, "Transport started: ${started.transportName}")
-    }
-
-    suspend fun stop() {
-        isRunning = false
-        try {
-            context.unregisterReceiver(wifiP2pReceiver)
-        } catch (e: Exception) { /* not registered */ }
-        _activeTransport.value.stop()
-    }
-
-    // ── Transport selection ───────────────────────────────────────────────────
-
-    private fun selectBestTransport(): Transport {
-        val wifiP2pAvailable = isWifiDirectAvailable()
-        val nearbyAvailable = nearbyTransport.isAvailable()
-        val bleAvailable = bleGattTransport.isAvailable()
-        Log.i(
-            TAG,
-            "Availability: wifiP2p=$wifiP2pAvailable nearby=$nearbyAvailable ble=$bleAvailable"
-        )
-        return if (wifiP2pAvailable && nearbyAvailable) {
-            Log.i(TAG, "Selecting NearbyConnections (WiFi Direct + BLE)")
-            nearbyTransport
-        } else if (bleAvailable) {
-            Log.i(TAG, "Selecting BLE GATT fallback (pure BLE)")
-            bleGattTransport
-        } else {
-            Log.w(TAG, "No transport fully available; defaulting to BLE and waiting for state recovery")
-            bleGattTransport
-        }
-    }
-
-    private suspend fun switchTo(newTransport: Transport) {
-        val current = _activeTransport.value
-        if (current.transportName == newTransport.transportName) return
-
-        Log.i(TAG, "Switching transport: ${current.transportName} -> ${newTransport.transportName}")
-        runCatching { current.stop() }
-            .onFailure { Log.w(TAG, "Failed stopping current transport: ${it.message}") }
-        val started = runCatching { startWithFallback(newTransport) }.getOrElse { error ->
-            Log.e(TAG, "Switch failed (${newTransport.transportName}), attempting rollback", error)
-            runCatching { current.start() }
-                .onSuccess { _activeTransport.value = current }
-            throw error
-        }
-        _activeTransport.value = started
-    }
-
-    private suspend fun startWithFallback(preferred: Transport): Transport {
-        return runCatching {
-            preferred.start()
-            preferred
-        }.getOrElse { startError ->
-            val fallback = if (preferred === nearbyTransport) bleGattTransport else nearbyTransport
-            if (fallback === preferred || !fallback.isAvailable()) {
-                throw startError
-            }
-
-            Log.w(
-                TAG,
-                "Start failed for ${preferred.transportName}: ${startError.message}. Falling back to ${fallback.transportName}",
-                startError
-            )
-            fallback.start()
-            fallback
-        }
-    }
-
-    private fun isWifiDirectAvailable(): Boolean {
-        val wifiP2pManager = context.getSystemService(WifiP2pManager::class.java)
-        return wifiP2pManager != null
-    }
-
-    // ── WiFi P2P state changes (switch transport if WiFi goes away) ───────────
-
-    private val wifiP2pReceiver = object : BroadcastReceiver() {
-        override fun onReceive(context: Context, intent: Intent) {
-            if (intent.action == WifiP2pManager.WIFI_P2P_STATE_CHANGED_ACTION) {
-                val state = intent.getIntExtra(WifiP2pManager.EXTRA_WIFI_STATE, -1)
-                val wifiEnabled = state == WifiP2pManager.WIFI_P2P_STATE_ENABLED
-                Log.d(TAG, "WiFi P2P state changed: enabled=$wifiEnabled")
-
-                if (!isRunning) return
-
-                scope.launch {
-                    val bestTransport = when {
-                        wifiEnabled && nearbyTransport.isAvailable() -> nearbyTransport
-                        bleGattTransport.isAvailable() -> bleGattTransport
-                        else -> _activeTransport.value
-                    }
-                    if (_activeTransport.value.transportName != bestTransport.transportName) {
-                        Log.i(TAG, "WiFi state change → switching transport to ${bestTransport.transportName}")
-                        switchTo(bestTransport)
+        lifecycleLock.withLock {
+            _isRunning.value = true
+            registerSystemStateReceiver()
+            reconcileLocked()
+            if (healthJob?.isActive != true) {
+                healthJob = scope.launch {
+                    while (isActive) {
+                        delay(HEALTH_CHECK_INTERVAL_MS)
+                        reconcile()
                     }
                 }
             }
         }
     }
 
-    private fun registerWifiP2pReceiver() {
-        val filter = IntentFilter(WifiP2pManager.WIFI_P2P_STATE_CHANGED_ACTION)
-        runCatching {
-            context.registerReceiver(wifiP2pReceiver, filter)
-        }.onFailure {
-            Log.w(TAG, "Failed to register WiFi P2P receiver: ${it.message}")
+    suspend fun stop() {
+        lifecycleLock.withLock {
+            _isRunning.value = false
+            healthJob?.cancel()
+            healthJob = null
+            unregisterSystemStateReceiver()
+            transports.forEach { transport ->
+                runCatching { transport.stop() }
+                    .onFailure { Log.w(TAG, "Stopping ${transport.shortName} failed: ${it.message}") }
+            }
         }
     }
 
-    // ── Delegate send methods ─────────────────────────────────────────────────
+    /** Fire-and-forget stop that survives the caller's scope being cancelled (e.g. Service.onDestroy). */
+    fun stopAsync() {
+        scope.launch { stop() }
+    }
 
-    suspend fun broadcastPacket(packet: com.meshsos.domain.model.SosPacket): Result<Unit> =
-        _activeTransport.value.broadcastPacket(packet)
+    /** Re-evaluate each transport: start the ones that became available, stop the broken ones. */
+    suspend fun reconcile() {
+        lifecycleLock.withLock { reconcileLocked() }
+    }
 
-    suspend fun sendAck(ack: com.meshsos.domain.model.AckPacket, toDeviceId: String): Result<Unit> =
-        _activeTransport.value.sendAck(ack, toDeviceId)
+    fun reconcileAsync() {
+        scope.launch { reconcile() }
+    }
 
-    fun connectedPeerCount(): Int = _activeTransport.value.connectedPeerCount()
+    private suspend fun reconcileLocked() {
+        if (!_isRunning.value) return
+        for (transport in transports) {
+            val available = transport.isAvailable()
+            val running = transport.isRunning.value
+            when {
+                available && !running -> {
+                    runCatching { transport.start() }
+                        .onSuccess { Log.i(TAG, "${transport.shortName} started") }
+                        .onFailure { Log.w(TAG, "${transport.shortName} failed to start: ${it.message}") }
+                }
+                !available && running -> {
+                    Log.i(TAG, "${transport.shortName} no longer available (${transport.unavailableReason()}), stopping")
+                    runCatching { transport.stop() }
+                }
+            }
+        }
+    }
+
+    // ── Bluetooth / Location state changes ────────────────────────────────────
+
+    private val systemStateReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            Log.d(TAG, "System state changed: ${intent.action}")
+            reconcileAsync()
+        }
+    }
+
+    private fun registerSystemStateReceiver() {
+        if (receiverRegistered) return
+        val filter = IntentFilter().apply {
+            addAction(BluetoothAdapter.ACTION_STATE_CHANGED)
+            addAction(LocationManager.PROVIDERS_CHANGED_ACTION)
+        }
+        runCatching {
+            ContextCompat.registerReceiver(context, systemStateReceiver, filter, ContextCompat.RECEIVER_EXPORTED)
+            receiverRegistered = true
+        }.onFailure { Log.w(TAG, "Failed to register state receiver: ${it.message}") }
+    }
+
+    private fun unregisterSystemStateReceiver() {
+        if (!receiverRegistered) return
+        runCatching { context.unregisterReceiver(systemStateReceiver) }
+        receiverRegistered = false
+    }
+
+    // ── Sending ───────────────────────────────────────────────────────────────
+
+    /** Sends on every running transport. Returns the set of peer ids reached. */
+    suspend fun broadcastPacket(packet: SosPacket): Result<Set<String>> =
+        sendOnAll { it.broadcastPacket(packet) }
+
+    suspend fun broadcastAck(ack: AckPacket): Result<Set<String>> =
+        sendOnAll { it.broadcastAck(ack) }
+
+    private suspend fun sendOnAll(send: suspend (Transport) -> Result<Set<String>>): Result<Set<String>> {
+        val running = transports.filter { it.isRunning.value }
+        if (running.isEmpty()) return Result.failure(IllegalStateException("No transport running"))
+        val reached = mutableSetOf<String>()
+        val errors = mutableListOf<String>()
+        for (transport in running) {
+            send(transport)
+                .onSuccess { reached += it }
+                .onFailure { errors += "${transport.shortName}: ${it.message}" }
+        }
+        return if (reached.isNotEmpty()) Result.success(reached)
+        else Result.failure(IllegalStateException(errors.joinToString("; ").ifBlank { "No peers connected" }))
+    }
+
+    fun connectedPeerCount(): Int = peers.value.size
 }

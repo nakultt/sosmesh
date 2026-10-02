@@ -9,8 +9,6 @@ import com.meshsos.data.db.MeshDatabase
 import com.meshsos.data.db.dao.MeshEventDao
 import com.meshsos.data.db.dao.PendingPacketDao
 import com.meshsos.data.db.dao.ProcessedIdDao
-import com.meshsos.data.transport.BleGattTransport
-import com.meshsos.data.transport.NearbyConnectionsTransport
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -44,7 +42,9 @@ object AppModule {
     @Singleton
     @Named("deviceName")
     fun provideDeviceName(@ApplicationContext context: Context, @Named("deviceId") deviceId: String): String {
-        return "Device-${android.os.Build.MODEL.take(6)}-${deviceId.take(3)}"
+        // Display name only; peers are identified by deviceId, which travels alongside it.
+        val model = android.os.Build.MODEL.orEmpty().replace("|", " ").trim().ifBlank { "Android" }
+        return "${model.take(20)} (${deviceId.take(4)})"
     }
 
     // ── Server config ─────────────────────────────────────────────────────────
@@ -76,22 +76,6 @@ object AppModule {
     @Provides
     @Singleton
     fun provideMeshEventDao(db: MeshDatabase): MeshEventDao = db.meshEventDao()
-
-    // ── Transports ────────────────────────────────────────────────────────────
-
-    @Provides
-    @Singleton
-    fun provideNearbyTransport(
-        @ApplicationContext context: Context,
-        @Named("deviceId") deviceId: String,
-        @Named("deviceName") deviceName: String
-    ): NearbyConnectionsTransport = NearbyConnectionsTransport(context, deviceId, deviceName)
-
-    @Provides
-    @Singleton
-    fun provideBleGattTransport(
-        @ApplicationContext context: Context
-    ): BleGattTransport = BleGattTransport(context)
 
     // ── DataStore ─────────────────────────────────────────────────────────────
 

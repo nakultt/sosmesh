@@ -45,6 +45,7 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 
     packaging {
@@ -110,4 +111,7 @@ dependencies {
 
     // Permissions helper
     implementation(libs.accompanist.permissions)
+
+    // Unit tests (pure JVM: packet parsing, wire codec, BLE framing)
+    testImplementation("junit:junit:4.13.2")
 }

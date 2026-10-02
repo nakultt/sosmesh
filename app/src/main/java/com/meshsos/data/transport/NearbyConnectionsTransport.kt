@@ -1,7 +1,9 @@
 package com.meshsos.data.transport
 
 import android.content.Context
+import android.os.SystemClock
 import android.util.Log
+import com.google.android.gms.common.api.ApiException
 import com.google.android.gms.nearby.Nearby
 import com.google.android.gms.nearby.connection.AdvertisingOptions
 import com.google.android.gms.nearby.connection.ConnectionInfo
@@ -17,21 +19,38 @@ import com.google.android.gms.nearby.connection.PayloadCallback
 import com.google.android.gms.nearby.connection.PayloadTransferUpdate
 import com.google.android.gms.nearby.connection.Strategy
 import com.meshsos.domain.model.AckPacket
-import com.meshsos.domain.model.PacketType
 import com.meshsos.domain.model.SosPacket
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withTimeoutOrNull
+import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Named
 import javax.inject.Singleton
 import kotlin.coroutines.resume
-import kotlin.coroutines.resumeWithException
 
 private const val TAG = "NearbyTransport"
 private const val SERVICE_ID = "com.meshsos.emergency"
+private const val MAINTENANCE_INTERVAL_MS = 3_000L
+private const val TIE_BREAK_GRACE_MS = 6_000L
+private const val PENDING_TIMEOUT_MS = 30_000L
+private const val MAX_BACKOFF_MS = 30_000L
+private const val SEND_TIMEOUT_MS = 10_000L
 
 @Singleton
 class NearbyConnectionsTransport @Inject constructor(
@@ -41,211 +60,270 @@ class NearbyConnectionsTransport @Inject constructor(
 ) : Transport {
 
     override val transportName = "NearbyConnections (WiFi Direct + BLE)"
+    override val shortName = "Nearby"
 
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val connectionsClient: ConnectionsClient = Nearby.getConnectionsClient(context)
-    private val connectedEndpoints = mutableSetOf<String>()
-    private val pendingConnections = mutableSetOf<String>() // endpoints we're currently connecting to
-    private val failedEndpoints = mutableMapOf<String, Int>() // endpoint -> retry count
+    private val localEndpointName = WireCodec.encodeIdentity(localDeviceId, localDeviceName)
 
-    private val _peerEvents = MutableSharedFlow<PeerEvent>(extraBufferCapacity = 32)
+    private data class Endpoint(
+        val endpointId: String,
+        val peerId: String,
+        val name: String,
+        val discoveredAt: Long
+    )
+
+    private val discovered = ConcurrentHashMap<String, Endpoint>()   // endpointId -> discovered info
+    private val connected = ConcurrentHashMap<String, Endpoint>()    // endpointId -> connected peer
+    private val initiated = ConcurrentHashMap<String, Endpoint>()    // endpointId -> handshake info
+    private val pending = ConcurrentHashMap<String, Long>()          // endpointId -> request time
+    private val retryAfter = ConcurrentHashMap<String, Long>()
+    private val failures = ConcurrentHashMap<String, Int>()
+
+    private val _peerEvents = MutableSharedFlow<PeerEvent>(extraBufferCapacity = 64)
     override val peerEvents: SharedFlow<PeerEvent> = _peerEvents.asSharedFlow()
 
-    private val _incomingPackets = MutableSharedFlow<IncomingPacket>(extraBufferCapacity = 32)
+    private val _incomingPackets = MutableSharedFlow<IncomingPacket>(extraBufferCapacity = 64)
     override val incomingPackets: SharedFlow<IncomingPacket> = _incomingPackets.asSharedFlow()
 
-    private val _incomingAcks = MutableSharedFlow<AckPacket>(extraBufferCapacity = 32)
-    override val incomingAcks: SharedFlow<AckPacket> = _incomingAcks.asSharedFlow()
+    private val _incomingAcks = MutableSharedFlow<IncomingAck>(extraBufferCapacity = 64)
+    override val incomingAcks: SharedFlow<IncomingAck> = _incomingAcks.asSharedFlow()
+
+    private val _peers = MutableStateFlow<List<PeerInfo>>(emptyList())
+    override val peers: StateFlow<List<PeerInfo>> = _peers.asStateFlow()
+
+    private val _isRunning = MutableStateFlow(false)
+    override val isRunning: StateFlow<Boolean> = _isRunning.asStateFlow()
+
+    private val _lastError = MutableStateFlow<String?>(null)
+    override val lastError: StateFlow<String?> = _lastError.asStateFlow()
+
+    private val lifecycleLock = Mutex()
+    private var maintenanceJob: Job? = null
 
     // ── Lifecycle ─────────────────────────────────────────────────────────────
 
     override suspend fun start() {
-        val unavailableReason = TransportCapabilityChecker.nearbyUnavailableReason(context)
-        if (unavailableReason != null) {
-            Log.w(TAG, unavailableReason)
-            _peerEvents.tryEmit(PeerEvent.Error(unavailableReason))
-            throw IllegalStateException(unavailableReason)
-        }
+        lifecycleLock.withLock {
+            if (_isRunning.value) return@withLock
+            val unavailableReason = unavailableReason()
+            if (unavailableReason != null) {
+                _lastError.value = unavailableReason
+                _peerEvents.tryEmit(PeerEvent.Error(unavailableReason))
+                throw IllegalStateException(unavailableReason)
+            }
 
-        startAdvertising()
-        try {
-            startDiscovery()
-        } catch (e: Throwable) {
-            runCatching { connectionsClient.stopAdvertising() }
-            throw e
-        }
+            try {
+                startAdvertising()
+                startDiscovery()
+            } catch (e: Throwable) {
+                stopInternal()
+                val message = "Nearby start failed: ${e.describe()}"
+                _lastError.value = message
+                _peerEvents.tryEmit(PeerEvent.Error(message))
+                throw e
+            }
 
-        Log.i(TAG, "NearbyConnections started. deviceId=$localDeviceId name=$localDeviceName")
+            _isRunning.value = true
+            _lastError.value = null
+            maintenanceJob = scope.launch { runMaintenance() }
+            log("Nearby started as '$localEndpointName'")
+        }
     }
 
     override suspend fun stop() {
-        connectionsClient.stopAdvertising()
-        connectionsClient.stopDiscovery()
-        connectionsClient.stopAllEndpoints()
-        connectedEndpoints.clear()
-        pendingConnections.clear()
-        failedEndpoints.clear()
+        lifecycleLock.withLock { stopInternal() }
         Log.i(TAG, "NearbyConnections stopped")
     }
 
-    override fun isAvailable(): Boolean {
-        return TransportCapabilityChecker.isNearbyAvailable(context)
+    private fun stopInternal() {
+        _isRunning.value = false
+        maintenanceJob?.cancel()
+        maintenanceJob = null
+        runCatching { connectionsClient.stopAdvertising() }
+        runCatching { connectionsClient.stopDiscovery() }
+        runCatching { connectionsClient.stopAllEndpoints() }
+        discovered.clear()
+        connected.clear()
+        initiated.clear()
+        pending.clear()
+        retryAfter.clear()
+        failures.clear()
+        updatePeers()
     }
 
-    override fun connectedPeerCount(): Int = connectedEndpoints.size
+    override fun isAvailable(): Boolean = TransportCapabilityChecker.isNearbyAvailable(context)
 
-    // ── Advertising ───────────────────────────────────────────────────────────
+    override fun unavailableReason(): String? = TransportCapabilityChecker.nearbyUnavailableReason(context)
 
-    private suspend fun startAdvertising() = suspendCancellableCoroutine<Unit> { cont ->
-        val options = AdvertisingOptions.Builder()
-            .setStrategy(Strategy.P2P_CLUSTER)
-            .build()
+    // ── Advertising / discovery ───────────────────────────────────────────────
 
-        connectionsClient.startAdvertising(
-            localDeviceName,
-            SERVICE_ID,
-            connectionLifecycleCallback,
-            options
-        ).addOnSuccessListener {
-            Log.d(TAG, "Advertising started as '$localDeviceName'")
-            _peerEvents.tryEmit(PeerEvent.Log("Nearby", "Advertising started as '$localDeviceName'"))
-            if (cont.isActive) cont.resume(Unit)
-        }.addOnFailureListener { e ->
-            Log.e(TAG, "Advertising failed: ${e.message}")
-            _peerEvents.tryEmit(PeerEvent.Error("Adv failed: ${e.message}"))
-            if (cont.isActive) cont.resumeWithException(e)
+    private suspend fun startAdvertising() {
+        val options = AdvertisingOptions.Builder().setStrategy(Strategy.P2P_CLUSTER).build()
+        awaitTask("advertising", ConnectionsStatusCodes.STATUS_ALREADY_ADVERTISING) { onSuccess, onFailure ->
+            connectionsClient.startAdvertising(localEndpointName, SERVICE_ID, connectionLifecycleCallback, options)
+                .addOnSuccessListener { onSuccess() }
+                .addOnFailureListener { onFailure(it) }
         }
     }
 
-    // ── Discovery ─────────────────────────────────────────────────────────────
-
-    private suspend fun startDiscovery() = suspendCancellableCoroutine<Unit> { cont ->
-        val options = DiscoveryOptions.Builder()
-            .setStrategy(Strategy.P2P_CLUSTER)
-            .build()
-
-        connectionsClient.startDiscovery(
-            SERVICE_ID,
-            endpointDiscoveryCallback,
-            options
-        ).addOnSuccessListener {
-            Log.d(TAG, "Discovery started")
-            _peerEvents.tryEmit(PeerEvent.Log("Nearby", "Discovery started"))
-            if (cont.isActive) cont.resume(Unit)
-        }.addOnFailureListener { e ->
-            Log.e(TAG, "Discovery failed: ${e.message}")
-            _peerEvents.tryEmit(PeerEvent.Error("Disc failed: ${e.message}"))
-            if (cont.isActive) cont.resumeWithException(e)
+    private suspend fun startDiscovery() {
+        val options = DiscoveryOptions.Builder().setStrategy(Strategy.P2P_CLUSTER).build()
+        awaitTask("discovery", ConnectionsStatusCodes.STATUS_ALREADY_DISCOVERING) { onSuccess, onFailure ->
+            connectionsClient.startDiscovery(SERVICE_ID, endpointDiscoveryCallback, options)
+                .addOnSuccessListener { onSuccess() }
+                .addOnFailureListener { onFailure(it) }
         }
     }
 
-    // ── Connection lifecycle ──────────────────────────────────────────────────
-
-    private val connectionLifecycleCallback = object : ConnectionLifecycleCallback() {
-        override fun onConnectionInitiated(endpointId: String, info: ConnectionInfo) {
-            Log.d(TAG, "Connection initiated from $endpointId (${info.endpointName})")
-            _peerEvents.tryEmit(PeerEvent.Log("Nearby", "Conn initiated: $endpointId (${info.endpointName})"))
-            // Auto-accept all connections in mesh mode
-            connectionsClient.acceptConnection(endpointId, payloadCallback)
-        }
-
-        override fun onConnectionResult(endpointId: String, result: ConnectionResolution) {
-            pendingConnections.remove(endpointId)
-            when (result.status.statusCode) {
-                ConnectionsStatusCodes.STATUS_OK -> {
-                    connectedEndpoints.add(endpointId)
-                    failedEndpoints.remove(endpointId)
-                    Log.i(TAG, "Connected: $endpointId (peers=${connectedEndpoints.size})")
-                    _peerEvents.tryEmit(PeerEvent.Connected(endpointId, endpointId))
-                }
-                ConnectionsStatusCodes.STATUS_CONNECTION_REJECTED -> {
-                    Log.w(TAG, "Connection rejected: $endpointId")
-                    _peerEvents.tryEmit(PeerEvent.ConnectionFailed(endpointId, "Rejected"))
-                }
-                ConnectionsStatusCodes.STATUS_ERROR -> {
-                    Log.e(TAG, "Connection error: $endpointId")
-                    _peerEvents.tryEmit(PeerEvent.ConnectionFailed(endpointId, "Error"))
-                    // Will be retried on next discovery cycle
-                }
-                else -> {
-                    Log.w(TAG, "Connection unknown status ${result.status.statusCode}: $endpointId")
-                    _peerEvents.tryEmit(PeerEvent.ConnectionFailed(endpointId, "Status ${result.status.statusCode}"))
+    private suspend fun awaitTask(
+        label: String,
+        alreadyRunningStatus: Int,
+        block: (onSuccess: () -> Unit, onFailure: (Exception) -> Unit) -> Unit
+    ) = suspendCancellableCoroutine<Unit> { cont ->
+        block(
+            { if (cont.isActive) cont.resume(Unit) },
+            { error ->
+                if ((error as? ApiException)?.statusCode == alreadyRunningStatus) {
+                    if (cont.isActive) cont.resume(Unit)
+                } else {
+                    Log.e(TAG, "Nearby $label failed: ${error.describe()}")
+                    if (cont.isActive) cont.resumeWith(Result.failure(error))
                 }
             }
-        }
-
-        override fun onDisconnected(endpointId: String) {
-            connectedEndpoints.remove(endpointId)
-            Log.i(TAG, "Disconnected: $endpointId (peers=${connectedEndpoints.size})")
-            _peerEvents.tryEmit(PeerEvent.Disconnected(endpointId))
-        }
+        )
     }
 
     // ── Discovery callback ────────────────────────────────────────────────────
 
     private val endpointDiscoveryCallback = object : EndpointDiscoveryCallback() {
         override fun onEndpointFound(endpointId: String, info: DiscoveredEndpointInfo) {
-            Log.d(TAG, "Endpoint found: $endpointId name=${info.endpointName} service=${info.serviceId}")
-            _peerEvents.tryEmit(PeerEvent.Log("Nearby", "Endpoint found: $endpointId (${info.endpointName})"))
-
             if (info.serviceId != SERVICE_ID) return
-            if (connectedEndpoints.contains(endpointId)) return
-            if (pendingConnections.contains(endpointId)) return
-
-            // ── TIE-BREAKER: prevent both devices from requesting simultaneously ──
-            // Only the device with the lexicographically SMALLER name initiates.
-            // The other device waits — it will receive the connection via onConnectionInitiated.
-            val shouldInitiate = localDeviceName < info.endpointName
-            Log.d(TAG, "Tie-breaker: localName='$localDeviceName' remoteName='${info.endpointName}' shouldInitiate=$shouldInitiate")
-            _peerEvents.tryEmit(PeerEvent.Log("Nearby", "Tie-break: '$localDeviceName' vs '${info.endpointName}' → ${if (shouldInitiate) "CONNECT" else "WAIT"}"))
-
-            if (!shouldInitiate) {
-                // We have the "larger" name — wait for the other side to connect to us
-                return
-            }
-
-            pendingConnections.add(endpointId)
-            connectionsClient.requestConnection(
-                localDeviceName,
-                endpointId,
-                connectionLifecycleCallback
-            ).addOnSuccessListener {
-                Log.d(TAG, "Connection requested to $endpointId")
-                _peerEvents.tryEmit(PeerEvent.Log("Nearby", "Conn requested → $endpointId"))
-            }.addOnFailureListener { e ->
-                pendingConnections.remove(endpointId)
-                val retryCount = failedEndpoints.getOrDefault(endpointId, 0) + 1
-                failedEndpoints[endpointId] = retryCount
-                Log.w(TAG, "Request connection failed to $endpointId (attempt $retryCount): ${e.message}")
-                _peerEvents.tryEmit(PeerEvent.Error("Conn Req failed → $endpointId: ${e.message}"))
-
-                // Retry after a delay if under max retries
-                if (retryCount <= 3) {
-                    val delayMs = (1000L * retryCount) + (Math.random() * 500).toLong()
-                    android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                        if (!connectedEndpoints.contains(endpointId) && !pendingConnections.contains(endpointId)) {
-                            Log.d(TAG, "Retrying connection to $endpointId (attempt ${retryCount + 1})")
-                            _peerEvents.tryEmit(PeerEvent.Log("Nearby", "Retry #${retryCount + 1} → $endpointId"))
-                            pendingConnections.add(endpointId)
-                            connectionsClient.requestConnection(
-                                localDeviceName,
-                                endpointId,
-                                connectionLifecycleCallback
-                            ).addOnFailureListener { retryErr ->
-                                pendingConnections.remove(endpointId)
-                                Log.w(TAG, "Retry failed to $endpointId: ${retryErr.message}")
-                                _peerEvents.tryEmit(PeerEvent.Error("Retry failed → $endpointId: ${retryErr.message}"))
-                            }
-                        }
-                    }, delayMs)
-                }
-            }
+            val (peerId, name) = WireCodec.parseIdentity(info.endpointName) ?: return
+            if (peerId == localDeviceId) return
+            discovered[endpointId] = Endpoint(endpointId, peerId, name, SystemClock.elapsedRealtime())
+            Log.d(TAG, "Endpoint found: $endpointId peer=$peerId name=$name")
+            maybeConnect(endpointId)
         }
 
         override fun onEndpointLost(endpointId: String) {
             Log.d(TAG, "Endpoint lost: $endpointId")
-            pendingConnections.remove(endpointId)
-            failedEndpoints.remove(endpointId)
-            _peerEvents.tryEmit(PeerEvent.Log("Nearby", "Endpoint lost: $endpointId"))
+            discovered.remove(endpointId)
+            if (!connected.containsKey(endpointId)) {
+                pending.remove(endpointId)
+                failures.remove(endpointId)
+                retryAfter.remove(endpointId)
+            }
+        }
+    }
+
+    private suspend fun runMaintenance() {
+        while (scope.isActive && _isRunning.value) {
+            delay(MAINTENANCE_INTERVAL_MS)
+            val now = SystemClock.elapsedRealtime()
+            // Requests that never produced a result are considered failed.
+            pending.entries.filter { now - it.value > PENDING_TIMEOUT_MS }.forEach { (endpointId, _) ->
+                pending.remove(endpointId)
+                scheduleRetry(endpointId)
+            }
+            discovered.keys.forEach { maybeConnect(it) }
+        }
+    }
+
+    /**
+     * Tie-breaker: the device with the smaller mesh id requests the connection immediately.
+     * The other device waits for a grace period and then connects anyway, so a one-sided
+     * discovery or identical names never leave two phones unconnected.
+     */
+    private fun maybeConnect(endpointId: String) {
+        if (!_isRunning.value) return
+        val endpoint = discovered[endpointId] ?: return
+        if (connected.containsKey(endpointId) || pending.containsKey(endpointId)) return
+        if (connected.values.any { it.peerId == endpoint.peerId }) return
+        val now = SystemClock.elapsedRealtime()
+        if ((retryAfter[endpointId] ?: 0L) > now) return
+        val weInitiate = localDeviceId < endpoint.peerId
+        if (!weInitiate && now - endpoint.discoveredAt < TIE_BREAK_GRACE_MS) return
+        requestConnection(endpoint)
+    }
+
+    private fun requestConnection(endpoint: Endpoint) {
+        val endpointId = endpoint.endpointId
+        if (pending.putIfAbsent(endpointId, SystemClock.elapsedRealtime()) != null) return
+        Log.d(TAG, "Requesting connection to ${endpoint.peerId} ($endpointId)")
+        connectionsClient.requestConnection(localEndpointName, endpointId, connectionLifecycleCallback)
+            .addOnSuccessListener {
+                _peerEvents.tryEmit(PeerEvent.Log(shortName, "Connection requested → ${endpoint.name}"))
+            }
+            .addOnFailureListener { error ->
+                val status = (error as? ApiException)?.statusCode
+                if (status == ConnectionsStatusCodes.STATUS_ALREADY_CONNECTED_TO_ENDPOINT) {
+                    // The other side connected to us first; onConnectionResult will follow.
+                    return@addOnFailureListener
+                }
+                pending.remove(endpointId)
+                Log.w(TAG, "requestConnection to $endpointId failed: ${error.describe()}")
+                scheduleRetry(endpointId)
+            }
+    }
+
+    private fun scheduleRetry(endpointId: String) {
+        val attempt = (failures[endpointId] ?: 0) + 1
+        failures[endpointId] = attempt
+        val backoff = (1_000L shl (attempt - 1).coerceAtMost(5)).coerceAtMost(MAX_BACKOFF_MS) +
+            (Math.random() * 750).toLong()
+        retryAfter[endpointId] = SystemClock.elapsedRealtime() + backoff
+    }
+
+    // ── Connection lifecycle ──────────────────────────────────────────────────
+
+    private val connectionLifecycleCallback = object : ConnectionLifecycleCallback() {
+        override fun onConnectionInitiated(endpointId: String, info: ConnectionInfo) {
+            val (peerId, name) = WireCodec.parseIdentity(info.endpointName) ?: (endpointId to endpointId)
+            initiated[endpointId] = Endpoint(endpointId, peerId, name, SystemClock.elapsedRealtime())
+            pending.putIfAbsent(endpointId, SystemClock.elapsedRealtime())
+            Log.d(TAG, "Connection initiated with $endpointId ($name), accepting")
+            // Mesh mode: auto-accept everyone running the SOS service.
+            connectionsClient.acceptConnection(endpointId, payloadCallback)
+                .addOnFailureListener { Log.w(TAG, "acceptConnection failed: ${it.describe()}") }
+        }
+
+        override fun onConnectionResult(endpointId: String, result: ConnectionResolution) {
+            pending.remove(endpointId)
+            val statusCode = result.status.statusCode
+            when (statusCode) {
+                ConnectionsStatusCodes.STATUS_OK,
+                ConnectionsStatusCodes.STATUS_ALREADY_CONNECTED_TO_ENDPOINT -> {
+                    val endpoint = initiated.remove(endpointId)
+                        ?: discovered[endpointId]
+                        ?: Endpoint(endpointId, endpointId, endpointId, SystemClock.elapsedRealtime())
+                    connected[endpointId] = endpoint
+                    failures.remove(endpointId)
+                    retryAfter.remove(endpointId)
+                    Log.i(TAG, "Connected: ${endpoint.peerId} via $endpointId (peers=${connected.size})")
+                    updatePeers()
+                }
+                else -> {
+                    initiated.remove(endpointId)
+                    val reason = when (statusCode) {
+                        ConnectionsStatusCodes.STATUS_CONNECTION_REJECTED -> "rejected"
+                        ConnectionsStatusCodes.STATUS_ERROR -> "error"
+                        else -> "status $statusCode"
+                    }
+                    Log.w(TAG, "Connection to $endpointId failed: $reason")
+                    _peerEvents.tryEmit(PeerEvent.ConnectionFailed(discovered[endpointId]?.peerId ?: endpointId, reason))
+                    scheduleRetry(endpointId)
+                }
+            }
+        }
+
+        override fun onDisconnected(endpointId: String) {
+            connected.remove(endpointId)
+            pending.remove(endpointId)
+            Log.i(TAG, "Disconnected: $endpointId (peers=${connected.size})")
+            updatePeers()
+            // Reconnect quickly if the endpoint is still around.
+            retryAfter[endpointId] = SystemClock.elapsedRealtime() + 1_000L
         }
     }
 
@@ -255,65 +333,83 @@ class NearbyConnectionsTransport @Inject constructor(
         override fun onPayloadReceived(endpointId: String, payload: Payload) {
             if (payload.type != Payload.Type.BYTES) return
             val bytes = payload.asBytes() ?: return
+            val fromPeer = connected[endpointId]?.peerId ?: initiated[endpointId]?.peerId ?: endpointId
 
-            Log.d(TAG, "Payload received from $endpointId size=${bytes.size}")
-
-            // Try as SOS packet first
-            val sosPacket = SosPacket.fromBytes(bytes)
-            if (sosPacket != null && sosPacket.type == PacketType.SOS) {
-                _incomingPackets.tryEmit(IncomingPacket(sosPacket, endpointId))
-                return
+            when (val message = WireCodec.decode(bytes)) {
+                is WireCodec.Message.Sos -> _incomingPackets.tryEmit(IncomingPacket(message.packet, fromPeer))
+                is WireCodec.Message.Ack -> _incomingAcks.tryEmit(IncomingAck(message.ack, fromPeer))
+                is WireCodec.Message.Hello -> Unit // Identity already comes from the endpoint name
+                null -> Log.w(TAG, "Unknown payload (${bytes.size} bytes) from $endpointId")
             }
-
-            // Try as ACK
-            val ack = AckPacket.fromBytes(bytes)
-            if (ack != null) {
-                _incomingAcks.tryEmit(ack)
-                return
-            }
-
-            Log.w(TAG, "Unknown payload from $endpointId")
         }
 
         override fun onPayloadTransferUpdate(endpointId: String, update: PayloadTransferUpdate) {
             if (update.status == PayloadTransferUpdate.Status.FAILURE) {
-                Log.w(TAG, "Transfer failed to $endpointId")
+                Log.w(TAG, "Payload transfer to/from $endpointId failed")
             }
         }
     }
 
     // ── Send ──────────────────────────────────────────────────────────────────
 
-    override suspend fun broadcastPacket(packet: SosPacket): Result<Unit> {
-        if (connectedEndpoints.isEmpty()) {
-            return Result.failure(IllegalStateException("No connected peers"))
-        }
+    override suspend fun broadcastPacket(packet: SosPacket): Result<Set<String>> =
+        sendToAll(WireCodec.encodeSos(packet))
 
-        val bytes = packet.toBytes()
-        val payload = Payload.fromBytes(bytes)
+    override suspend fun broadcastAck(ack: AckPacket): Result<Set<String>> =
+        sendToAll(WireCodec.encodeAck(ack))
 
-        var successCount = 0
-        val snapshot = connectedEndpoints.toSet()
+    private suspend fun sendToAll(bytes: ByteArray): Result<Set<String>> {
+        if (!_isRunning.value) return Result.failure(IllegalStateException("Nearby transport not running"))
+        val snapshot = connected.values.toList()
+        if (snapshot.isEmpty()) return Result.failure(IllegalStateException("No Nearby peers connected"))
 
-        for (endpointId in snapshot) {
-            val result = sendPayloadSuspend(endpointId, payload)
-            if (result.isSuccess) successCount++
-            else Log.w(TAG, "Failed to send to $endpointId")
-        }
-
-        return if (successCount > 0) Result.success(Unit)
-        else Result.failure(Exception("All sends failed"))
+        val ok = sendPayload(snapshot.map { it.endpointId }, Payload.fromBytes(bytes))
+        return if (ok) Result.success(snapshot.map { it.peerId }.toSet())
+        else Result.failure(IllegalStateException("Nearby send failed"))
     }
 
-    override suspend fun sendAck(ack: AckPacket, toDeviceId: String): Result<Unit> {
-        val payload = Payload.fromBytes(ack.toBytes())
-        return sendPayloadSuspend(toDeviceId, payload)
+    private suspend fun sendPayload(endpointIds: List<String>, payload: Payload): Boolean =
+        withTimeoutOrNull(SEND_TIMEOUT_MS) {
+            suspendCancellableCoroutine<Boolean> { cont ->
+                connectionsClient.sendPayload(endpointIds, payload)
+                    .addOnSuccessListener { if (cont.isActive) cont.resume(true) }
+                    .addOnFailureListener { error ->
+                        Log.w(TAG, "sendPayload failed: ${error.describe()}")
+                        if (cont.isActive) cont.resume(false)
+                    }
+            }
+        } ?: false
+
+    // ── Peers ─────────────────────────────────────────────────────────────────
+
+    @Synchronized
+    private fun updatePeers() {
+        val updated = connected.values
+            .groupBy { it.peerId }
+            .map { (peerId, endpoints) -> PeerInfo(peerId, endpoints.first().name, setOf(shortName)) }
+            .sortedBy { it.peerId }
+        val previous = _peers.value
+        if (updated == previous) return
+        _peers.value = updated
+
+        val previousIds = previous.map { it.peerId }.toSet()
+        val updatedIds = updated.map { it.peerId }.toSet()
+        updated.filter { it.peerId !in previousIds }.forEach {
+            _peerEvents.tryEmit(PeerEvent.Connected(it.peerId, it.name, shortName))
+        }
+        (previousIds - updatedIds).forEach {
+            _peerEvents.tryEmit(PeerEvent.Disconnected(it, shortName))
+        }
     }
 
-    private suspend fun sendPayloadSuspend(endpointId: String, payload: Payload): Result<Unit> =
-        suspendCancellableCoroutine { cont ->
-            connectionsClient.sendPayload(endpointId, payload)
-                .addOnSuccessListener { cont.resume(Result.success(Unit)) }
-                .addOnFailureListener { e -> cont.resume(Result.failure(e)) }
-        }
+    private fun log(message: String) {
+        Log.i(TAG, message)
+        _peerEvents.tryEmit(PeerEvent.Log(shortName, message))
+    }
+
+    private fun Throwable.describe(): String {
+        val code = (this as? ApiException)?.statusCode
+        val codeName = code?.let { ConnectionsStatusCodes.getStatusCodeString(it) }
+        return listOfNotNull(codeName, message).joinToString(": ").ifBlank { javaClass.simpleName }
+    }
 }
