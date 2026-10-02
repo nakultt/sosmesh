@@ -1,170 +1,68 @@
 package com.meshsos.domain.usecase
 
-import android.annotation.SuppressLint
-import android.content.Context
-import android.location.Geocoder
-import android.os.Build
 import android.util.Log
-import com.google.android.gms.location.LocationRequest
-import com.google.android.gms.location.LocationServices
-import com.google.android.gms.location.Priority
-import com.meshsos.data.transport.TransportManager
 import com.meshsos.domain.model.IncidentCategory
 import com.meshsos.domain.model.IncidentInfo
-import com.meshsos.domain.model.LocationInfo
 import com.meshsos.domain.model.PacketMetadata
 import com.meshsos.domain.model.RoutePoint
 import com.meshsos.domain.model.Severity
 import com.meshsos.domain.model.SosPacket
-import com.meshsos.domain.service.DeduplicationService
-import com.meshsos.domain.statemachine.MeshEvent
+import com.meshsos.domain.service.BatteryMonitor
+import com.meshsos.domain.service.DeviceLocationProvider
 import com.meshsos.domain.statemachine.MeshStateMachine
-import dagger.hilt.android.qualifiers.ApplicationContext
-import kotlinx.coroutines.suspendCancellableCoroutine
-import kotlinx.coroutines.withTimeoutOrNull
-import java.util.Locale
+import java.time.Instant
 import javax.inject.Inject
 import javax.inject.Named
 import javax.inject.Singleton
-import kotlin.coroutines.resume
 
 private const val TAG = "SendSosUseCase"
+private const val LOCATION_TIMEOUT_MS = 5_000L
+private const val GEOCODE_TIMEOUT_MS = 2_000L
 
 @Singleton
 class SendSosUseCase @Inject constructor(
-    @ApplicationContext private val context: Context,
     private val stateMachine: MeshStateMachine,
-    private val transportManager: TransportManager,
-    private val deduplicationService: DeduplicationService,
-    private val uploadPacketUseCase: com.meshsos.domain.usecase.UploadPacketUseCase,
-    @Named("deviceId") private val localDeviceId: String,
-    private val batteryMonitor: com.meshsos.domain.service.BatteryMonitor
+    private val deviceLocationProvider: DeviceLocationProvider,
+    private val batteryMonitor: BatteryMonitor,
+    @Named("deviceId") private val localDeviceId: String
 ) {
-    @SuppressLint("MissingPermission")
+    /**
+     * Builds the SOS packet (location is best effort and never blocks longer than a few
+     * seconds) and hands it to the state machine, which broadcasts it on every transport,
+     * keeps re-sending it to new peers, and uploads it directly when online.
+     */
     suspend fun execute(
         category: IncidentCategory,
         severity: Severity = Severity.CRITICAL,
         message: String = ""
-    ): Result<SosPacket> {
+    ): Result<SosPacket> = runCatching {
         Log.i(TAG, "Sending SOS: category=$category severity=$severity")
 
-        // 1. Get location (timeout 5s — don't block SOS for GPS)
-        val location = withTimeoutOrNull(5_000) { getLastLocation() }
+        val fix = deviceLocationProvider.getCurrentLocation(
+            timeoutMs = LOCATION_TIMEOUT_MS,
+            highAccuracy = true
+        )
+        val location = fix?.let {
+            it.copy(address = deviceLocationProvider.reverseGeocode(it.lat, it.lng, GEOCODE_TIMEOUT_MS))
+        }
 
-        // 2. Build packet
-        val now = java.time.Instant.now().epochSecond
+        val now = Instant.now().epochSecond
         val packet = SosPacket(
             senderId = localDeviceId,
             incident = IncidentInfo(
                 severity = severity,
                 category = category,
-                message = message,
+                message = message.trim(),
                 location = location
             ),
             metadata = PacketMetadata(
                 createdAt = now,
-                route = listOf(
-                    RoutePoint(
-                        deviceId = localDeviceId,
-                        location = location,
-                        timestamp = now
-                    )
-                ),
+                route = listOf(RoutePoint(deviceId = localDeviceId, location = location, timestamp = now)),
                 batteryLevel = batteryMonitor.getBatteryLevel()
             )
         )
 
-        // 3. Mark as seen so we don't relay our own packet back to ourselves
-        deduplicationService.markSeen(packet.id)
-
-        // 4. Transition state machine
-        stateMachine.dispatch(MeshEvent.UserTriggeredSos(packet))
-
-        // 5. Broadcast to connected peers immediately
-        val broadcastResult = transportManager.broadcastPacket(packet)
-        val peerCount = transportManager.connectedPeerCount()
-        stateMachine.updatePeersReached(peerCount)
-        Log.d(TAG, "Broadcast result: $broadcastResult peers=$peerCount")
-
-        // 6. Primary Sender Direct Upload
-        // If the device sending the SOS has active internet, it should immediately upload it to the server!
-        val hasInternet = uploadPacketUseCase.hasInternet()
-        if (hasInternet) {
-            val uploadResult = uploadPacketUseCase.upload(packet)
-            uploadResult.onSuccess { response ->
-                val serverAck = com.meshsos.domain.model.AckPacket(
-                    originalPacketId = packet.id,
-                    alertId = response.alertId,
-                    uploadedBy = localDeviceId,
-                    respondersNotified = response.respondersNotified,
-                    estimatedArrival = response.estimatedArrival
-                )
-                // We use onAckReceived to seamlessly drop into MeshState.Confirmed state for Originator
-                stateMachine.onAckReceived(serverAck)
-                Log.i(TAG, "Originator direct upload successful! Alert ID: ${response.alertId}")
-            }.onFailure { ex ->
-                Log.w(TAG, "Originator direct upload failed: ${ex.message}")
-            }
-        } else {
-            Log.i(TAG, "No internet for direct upload, relying entirely on mesh broadcast.")
-        }
-
-        return Result.success(packet)
-    }
-
-    private suspend fun getLastLocation(): LocationInfo? =
-        suspendCancellableCoroutine { cont ->
-            try {
-                val fusedClient = LocationServices.getFusedLocationProviderClient(context)
-                fusedClient.getCurrentLocation(
-                    Priority.PRIORITY_BALANCED_POWER_ACCURACY,
-                    null
-                ).addOnSuccessListener { androidLocation ->
-                    if (androidLocation == null) {
-                        cont.resume(null)
-                        return@addOnSuccessListener
-                    }
-                    val address = reverseGeocode(androidLocation.latitude, androidLocation.longitude)
-                    cont.resume(
-                        LocationInfo(
-                            lat = androidLocation.latitude,
-                            lng = androidLocation.longitude,
-                            accuracy = androidLocation.accuracy,
-                            address = address
-                        )
-                    )
-                }.addOnFailureListener {
-                    Log.w(TAG, "Location failed: ${it.message}")
-                    cont.resume(null)
-                }
-            } catch (e: SecurityException) {
-                Log.e(TAG, "Location permission missing: ${e.message}")
-                cont.resume(null)
-            } catch (e: Exception) {
-                Log.e(TAG, "Error fetching location: ${e.message}")
-                cont.resume(null)
-            }
-        }
-
-    private fun reverseGeocode(lat: Double, lng: Double): String {
-        return try {
-            val geocoder = Geocoder(context, Locale.getDefault())
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                // Async on API 33+
-                var result = ""
-                geocoder.getFromLocation(lat, lng, 1) { addresses ->
-                    result = addresses.firstOrNull()?.getAddressLine(0) ?: ""
-                }
-                result
-            } else {
-                @Suppress("DEPRECATION")
-                geocoder.getFromLocation(lat, lng, 1)
-                    ?.firstOrNull()
-                    ?.getAddressLine(0) ?: ""
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "Geocoding failed: ${e.message}")
-            ""
-        }
+        stateMachine.originate(packet)
+        packet
     }
 }

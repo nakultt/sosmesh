@@ -1,5 +1,6 @@
 package com.meshsos.data.api
 
+import com.meshsos.BuildConfig
 import com.meshsos.domain.model.LocationInfo
 import com.meshsos.domain.model.SosPacket
 import okhttp3.OkHttpClient
@@ -19,7 +20,7 @@ data class PacketMetadataDto(
     val ttl: Int,
     val maxHops: Int,
     val currentHops: Int,
-    val route: List<String>,
+    val route: List<com.meshsos.domain.model.RoutePoint>,
     val batteryLevel: Int
 )
 
@@ -41,7 +42,8 @@ data class UploadRequest(
 
 data class UploadResponse(
     val success: Boolean,
-    val alertId: String,
+    // Nullable because Gson does not enforce Kotlin nullability on malformed responses
+    val alertId: String?,
     val respondersNotified: Int = 0,
     val estimatedArrival: String = "",
     val deduplicated: Boolean = false
@@ -59,8 +61,10 @@ interface SosApiService {
 @Singleton
 class SosApiServiceFactory @Inject constructor() {
     fun create(baseUrl: String): SosApiService {
+        // Request bodies contain precise victim locations: never log them in release builds.
         val logging = HttpLoggingInterceptor().apply {
-            level = HttpLoggingInterceptor.Level.BODY
+            level = if (BuildConfig.DEBUG) HttpLoggingInterceptor.Level.BODY
+            else HttpLoggingInterceptor.Level.NONE
         }
 
         val client = OkHttpClient.Builder()
