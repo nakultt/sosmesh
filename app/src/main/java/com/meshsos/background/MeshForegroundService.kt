@@ -65,6 +65,7 @@ class MeshForegroundService : LifecycleService() {
     @Inject lateinit var meshSettings: MeshSettings
 
     private var wakeLock: PowerManager.WakeLock? = null
+    private var lastStatusText = "Starting mesh relay…"
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
 
     // ── Lifecycle ─────────────────────────────────────────────────────────────
@@ -101,7 +102,12 @@ class MeshForegroundService : LifecycleService() {
                 stopSelf()
                 return START_NOT_STICKY
             }
-            ACTION_REFRESH -> transportManager.reconcileAsync()
+            ACTION_REFRESH -> {
+                // Every startForegroundService() call must be answered with startForeground().
+                startInForeground()
+                transportManager.reconcileAsync()
+            }
+            else -> startInForeground()
         }
         return START_STICKY
     }
@@ -125,7 +131,7 @@ class MeshForegroundService : LifecycleService() {
      * when location permission is granted, and dropped if the system refuses it (e.g. boot).
      */
     private fun startInForeground(): Boolean {
-        val notification = buildNotification("Starting mesh relay…")
+        val notification = buildNotification(lastStatusText)
         val connectedDevice = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
         } else 0
@@ -348,6 +354,7 @@ class MeshForegroundService : LifecycleService() {
     }
 
     private fun updateNotification(status: String) {
+        lastStatusText = status
         runCatching {
             getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, buildNotification(status))
         }
