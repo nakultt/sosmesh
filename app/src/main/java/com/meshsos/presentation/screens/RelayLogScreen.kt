@@ -37,7 +37,6 @@ import com.meshsos.data.db.entity.MeshEventEntity
 import com.meshsos.domain.model.MeshEventType
 import com.meshsos.presentation.theme.SafeGreen
 import com.meshsos.presentation.theme.SosRed
-import com.meshsos.presentation.theme.SubtleGray
 import com.meshsos.presentation.theme.WarnAmber
 import com.meshsos.presentation.viewmodels.MeshViewModel
 import java.text.SimpleDateFormat
@@ -48,6 +47,7 @@ import java.util.Locale
 fun RelayLogScreen(viewModel: MeshViewModel) {
     val events by viewModel.recentEvents.collectAsState()
     val listState = rememberLazyListState()
+    val mutedColor = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.55f)
 
     // Auto-scroll to top when new event arrives
     LaunchedEffect(events.size) {
@@ -73,14 +73,14 @@ fun RelayLogScreen(viewModel: MeshViewModel) {
             )
             Text(
                 "${events.size} events",
-                color = SubtleGray,
+                color = mutedColor,
                 fontSize = 13.sp
             )
         }
 
         Text(
             "Device ID: ${viewModel.localDeviceId}",
-            color = SubtleGray,
+            color = mutedColor,
             fontSize = 11.sp,
             fontFamily = FontFamily.Monospace
         )
@@ -90,7 +90,7 @@ fun RelayLogScreen(viewModel: MeshViewModel) {
         if (events.isEmpty()) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Text("No mesh events yet.\nSend an SOS or come in range of other devices.",
-                    color = SubtleGray, fontSize = 14.sp,
+                    color = mutedColor, fontSize = 14.sp,
                     textAlign = androidx.compose.ui.text.style.TextAlign.Center
                 )
             }
@@ -107,7 +107,8 @@ fun RelayLogScreen(viewModel: MeshViewModel) {
 @Composable
 fun EventRow(event: MeshEventEntity) {
     val type = runCatching { MeshEventType.valueOf(event.eventType) }.getOrNull()
-    val dotColor = type?.dotColor() ?: SubtleGray
+    val mutedColor = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.55f)
+    val dotColor = type?.dotColor() ?: mutedColor
 
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -140,7 +141,7 @@ fun EventRow(event: MeshEventEntity) {
                     )
                     Text(
                         event.timestamp.toTimeString(),
-                        color = SubtleGray,
+                        color = mutedColor,
                         fontSize = 11.sp,
                         fontFamily = FontFamily.Monospace
                     )
@@ -153,7 +154,7 @@ fun EventRow(event: MeshEventEntity) {
                 event.packetId?.let {
                     Text(
                         "pkt: ${it.take(8)}…",
-                        color = SubtleGray,
+                        color = mutedColor,
                         fontSize = 11.sp,
                         fontFamily = FontFamily.Monospace
                     )
@@ -163,6 +164,8 @@ fun EventRow(event: MeshEventEntity) {
     }
 }
 
+private val NeutralGray = Color(0xFF8B929A)
+
 fun MeshEventType.dotColor(): Color = when (this) {
     MeshEventType.SOS_SENT -> SosRed
     MeshEventType.SOS_RECEIVED -> WarnAmber
@@ -170,11 +173,11 @@ fun MeshEventType.dotColor(): Color = when (this) {
     MeshEventType.PACKET_UPLOADED -> SafeGreen
     MeshEventType.ACK_RECEIVED -> SafeGreen
     MeshEventType.PEER_CONNECTED -> SafeGreen
-    MeshEventType.PEER_DISCONNECTED -> SubtleGray
+    MeshEventType.PEER_DISCONNECTED -> NeutralGray
     MeshEventType.TRANSPORT_SWITCHED -> Color(0xFF42A5F5)
-    MeshEventType.DUPLICATE_DROPPED -> SubtleGray
-    MeshEventType.TTL_EXPIRED -> SubtleGray
-    MeshEventType.HOP_LIMIT_REACHED -> SubtleGray
+    MeshEventType.DUPLICATE_DROPPED -> NeutralGray
+    MeshEventType.TTL_EXPIRED -> NeutralGray
+    MeshEventType.HOP_LIMIT_REACHED -> NeutralGray
     MeshEventType.ERROR -> SosRed
 }
 
@@ -193,5 +196,4 @@ fun MeshEventType.label(): String = when (this) {
     MeshEventType.ERROR -> "Error"
 }
 
-private val timeFormat = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
-fun Long.toTimeString(): String = timeFormat.format(Date(this * 1000))
+fun Long.toTimeString(): String = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date(this * 1000))

@@ -1,6 +1,6 @@
 from pydantic import BaseModel, Field
 from typing import Optional
-from datetime import datetime
+from datetime import datetime, timezone
 import uuid
 
 
@@ -89,10 +89,10 @@ class Alert(BaseModel):
     relayDeviceIds: list[str] = Field(default_factory=list)
     uploadAttempts: int = 1
     lastRelayDeviceId: str
-    lastReceivedAt: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    lastReceivedAt: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     status: str = "ACTIVE"  # ACTIVE, RESPONDING, RESOLVED
     createdAt: int  # epoch seconds from device
-    receivedAt: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    receivedAt: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     respondersNotified: int = 0
     estimatedArrival: str = ""
 

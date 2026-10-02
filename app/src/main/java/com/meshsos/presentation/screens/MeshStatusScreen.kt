@@ -34,6 +34,9 @@ import androidx.compose.ui.unit.sp
 import com.meshsos.domain.model.HelperStatus
 import com.meshsos.domain.model.SosPacket
 import com.meshsos.domain.statemachine.MeshState
+import androidx.compose.ui.text.style.TextAlign
+import com.meshsos.presentation.components.ReadinessActions
+import com.meshsos.presentation.components.ReadinessBanner
 import com.meshsos.presentation.theme.SafeGreen
 import com.meshsos.presentation.theme.SosRed
 import com.meshsos.presentation.theme.WarnAmber
@@ -41,10 +44,14 @@ import com.meshsos.presentation.viewmodels.MeshViewModel
 import java.util.Locale
 
 @Composable
-fun MeshStatusScreen(viewModel: MeshViewModel) {
+fun MeshStatusScreen(viewModel: MeshViewModel, readinessActions: ReadinessActions) {
     val meshState by viewModel.meshState.collectAsState()
-    val peerCount by viewModel.peerCount.collectAsState()
+    val peers by viewModel.peers.collectAsState()
     val transportName by viewModel.activeTransportName.collectAsState()
+    val transportStatuses by viewModel.transportStatuses.collectAsState()
+    val receivedAlerts by viewModel.receivedAlerts.collectAsState()
+    val readiness by viewModel.readiness.collectAsState()
+    val serviceRunning by viewModel.serviceRunning.collectAsState()
     val pendingCount by viewModel.pendingPacketCount.collectAsState()
     val receivedSosDetails = meshState.receivedSosDetails()
     val canSendLocalHelpUpdate = viewModel.canSendLocalHelpUpdate()
@@ -70,25 +77,74 @@ fun MeshStatusScreen(viewModel: MeshViewModel) {
             color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f),
             fontSize = 14.sp
         )
-        Spacer(Modifier.height(24.dp))
+        Spacer(Modifier.height(16.dp))
+
+        ReadinessBanner(
+            readiness = readiness,
+            actions = readinessActions,
+            serviceRunning = serviceRunning,
+            onStartService = { viewModel.startService() },
+            modifier = Modifier.padding(bottom = 16.dp)
+        )
 
         // ── Transport info ────────────────────────────────────────────────────
-        SectionCard(title = "ACTIVE TRANSPORT") {
+        SectionCard(title = "TRANSPORTS") {
             InfoRow(
-                label = "Mode",
-                value = if (transportName.contains("Nearby")) "WiFi Direct + BLE" else "Pure BLE",
-                valueColor = if (transportName.contains("Nearby")) SafeGreen else WarnAmber
+                label = "Mesh",
+                value = transportName,
+                valueColor = if (transportName == "Offline") SosRed else SafeGreen
             )
+            transportStatuses.forEach { status ->
+                InfoRow(
+                    label = status.shortName,
+                    value = when {
+                        status.running -> "Running • ${status.peerCount} peer(s)"
+                        else -> "Stopped"
+                    },
+                    valueColor = if (status.running) SafeGreen else WarnAmber
+                )
+                status.error?.let { error ->
+                    Text(
+                        error,
+                        color = if (status.running) WarnAmber else SosRed,
+                        fontSize = 12.sp,
+                        lineHeight = 16.sp,
+                        modifier = Modifier.padding(bottom = 4.dp)
+                    )
+                }
+            }
             InfoRow(
-                label = "Peers Connected",
-                value = "$peerCount",
-                valueColor = MaterialTheme.colorScheme.onBackground
-            )
-            InfoRow(
-                label = "Pending Queue",
+                label = "Pending Uploads",
                 value = if (pendingCount == 0) "Clear" else "$pendingCount packet(s)",
                 valueColor = if (pendingCount == 0) SafeGreen else WarnAmber
             )
+            InfoRow(
+                label = "This Device",
+                value = viewModel.localDeviceId,
+                valueColor = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f)
+            )
+        }
+
+        Spacer(Modifier.height(16.dp))
+
+        // ── Connected peers ──────────────────────────────────────────────────
+        SectionCard(title = "CONNECTED PEERS (${peers.size})") {
+            if (peers.isEmpty()) {
+                Text(
+                    "No devices in range yet. Keep MeshSOS open on nearby phones with Bluetooth on.",
+                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f),
+                    fontSize = 13.sp,
+                    lineHeight = 18.sp
+                )
+            } else {
+                peers.forEach { peer ->
+                    InfoRow(
+                        label = peer.name,
+                        value = peer.transports.joinToString(" + "),
+                        valueColor = SafeGreen
+                    )
+                }
+            }
         }
 
         Spacer(Modifier.height(16.dp))
@@ -162,6 +218,43 @@ fun MeshStatusScreen(viewModel: MeshViewModel) {
             }
         }
 
+        if (receivedAlerts.isNotEmpty()) {
+            Spacer(Modifier.height(16.dp))
+            SectionCard(title = "RECEIVED ALERTS (${receivedAlerts.size})") {
+                receivedAlerts.forEach { alert ->
+                    val incident = alert.packet.incident
+                    Column(modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+                        Text(
+                            "${incident.category.displayName()} • ${incident.severity.name}",
+                            color = WarnAmber,
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Text(
+                            buildString {
+                                append("From ${alert.packet.senderId.shortId()} via ${alert.fromDevice.shortId()}")
+                                append(" • hop ${alert.packet.metadata.currentHops}")
+                                append(" • ${alert.receivedAt.toTimeString()}")
+                            },
+                            color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f),
+                            fontSize = 12.sp
+                        )
+                        if (incident.message.isNotBlank()) {
+                            Text(incident.message, color = MaterialTheme.colorScheme.onBackground, fontSize = 13.sp)
+                        }
+                        Text(
+                            alert.alertId?.let { "Uploaded • $it" } ?: "Not yet confirmed by server",
+                            color = if (alert.alertId != null) SafeGreen else MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f),
+                            fontSize = 12.sp
+                        )
+                    }
+                }
+                TextButton(onClick = { viewModel.clearReceivedAlerts() }) {
+                    Text("Clear list", color = MaterialTheme.colorScheme.primary)
+                }
+            }
+        }
+
         Spacer(Modifier.height(32.dp))
     }
 }
@@ -202,13 +295,15 @@ fun InfoRow(label: String, value: String, valueColor: Color) {
         Text(
             label,
             color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f),
-            fontSize = 14.sp
+            fontSize = 14.sp,
+            modifier = Modifier.weight(1f, fill = false).padding(end = 12.dp)
         )
         Text(
             value,
             color = valueColor,
             fontSize = 14.sp,
             fontWeight = FontWeight.Medium,
+            textAlign = TextAlign.End,
             fontFamily = if (label.contains("ID") || label.contains("Packet")) FontFamily.Monospace else FontFamily.Default
         )
     }

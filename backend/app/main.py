@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 from typing import Optional
 import logging
 import hashlib
-from datetime import datetime
+from datetime import datetime, timezone
 from pymongo.errors import DuplicateKeyError
 
 from app.database import get_database, close_database
@@ -86,7 +86,7 @@ async def health():
 async def receive_sos(request: UploadRequest):
     db = await get_database()
     packet = request.packet
-    now_iso = datetime.utcnow().isoformat()
+    now_iso = datetime.now(timezone.utc).isoformat()
     dedupe_key = build_dedupe_key(packet)
     safe_route = sanitize_route(
         route_points=packet.metadata.route,

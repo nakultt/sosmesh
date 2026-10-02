@@ -18,8 +18,9 @@ class ThemePreferences @Inject constructor(
 ) {
     private val darkModeKey = booleanPreferencesKey("dark_mode")
 
-    val isDarkMode: Flow<Boolean> = context.dataStore.data.map { prefs ->
-        prefs[darkModeKey] ?: false
+    /** Explicit user choice, or null to follow the system theme. */
+    val isDarkMode: Flow<Boolean?> = context.dataStore.data.map { prefs ->
+        prefs[darkModeKey]
     }
 
     suspend fun setDarkMode(enabled: Boolean) {

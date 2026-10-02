@@ -9,10 +9,10 @@ import java.time.Instant
 // ── States ────────────────────────────────────────────────────────────────────
 
 sealed class MeshState {
-    /** App is open, BLE is scanning passively, no active SOS */
+    /** App is open, mesh is listening, no active SOS */
     object Idle : MeshState()
 
-    /** This device originated the SOS — scanning + advertising, waiting for relay/ack */
+    /** This device originated the SOS — broadcasting it and waiting for an upload ACK */
     data class Originator(
         val packet: SosPacket,
         val peersReached: Int = 0,
@@ -32,7 +32,7 @@ sealed class MeshState {
         val receivedFromDevice: String? = null
     ) : MeshState()
 
-    /** Upload succeeded — ACK sent back along route, waiting for originator ACK */
+    /** Upload succeeded — ACK sent back through the mesh toward the originator */
     data class AwaitingAck(
         val originalPacketId: String,
         val alertId: String,
@@ -62,16 +62,10 @@ data class LocalHelpUpdate(
     val timestamp: Long = Instant.now().epochSecond
 )
 
-// ── Events that drive state transitions ───────────────────────────────────────
-
-sealed class MeshEvent {
-    data class UserTriggeredSos(val packet: SosPacket) : MeshEvent()
-    data class PacketReceived(val packet: SosPacket, val fromDevice: String) : MeshEvent()
-    data class AckReceived(val ack: AckPacket) : MeshEvent()
-    data class UploadSucceeded(val alertId: String) : MeshEvent()
-    data class UploadFailed(val reason: String) : MeshEvent()
-    data class PeerConnected(val deviceId: String) : MeshEvent()
-    data class PeerDisconnected(val deviceId: String) : MeshEvent()
-    object UserCancelledSos : MeshEvent()
-    object Reset : MeshEvent()
-}
+/** An SOS from another device that reached this one (kept even while we are the originator). */
+data class ReceivedAlert(
+    val packet: SosPacket,
+    val fromDevice: String,
+    val receivedAt: Long = Instant.now().epochSecond,
+    val alertId: String? = null
+)
