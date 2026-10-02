@@ -42,6 +42,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -52,6 +53,7 @@ import androidx.compose.ui.draw.scale
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
@@ -65,19 +67,22 @@ import com.meshsos.domain.model.SosPacket
 import com.meshsos.domain.model.Severity
 import com.meshsos.domain.statemachine.LocalHelpUpdate
 import com.meshsos.domain.statemachine.MeshState
+import com.meshsos.presentation.components.ReadinessActions
+import com.meshsos.presentation.components.ReadinessBanner
 import com.meshsos.presentation.theme.MeshTeal
 import com.meshsos.presentation.theme.SafeGreen
 import com.meshsos.presentation.theme.SosRed
 import com.meshsos.presentation.theme.SosRedDark
 import com.meshsos.presentation.theme.WarnAmber
 import com.meshsos.presentation.viewmodels.MeshViewModel
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.absoluteValue
 import java.util.Locale
 
 @Composable
-fun SosScreen(viewModel: MeshViewModel) {
+fun SosScreen(viewModel: MeshViewModel, readinessActions: ReadinessActions) {
     val meshState by viewModel.meshState.collectAsState()
     val peerCount by viewModel.peerCount.collectAsState()
     val isSending by viewModel.isSending.collectAsState()
@@ -85,6 +90,9 @@ fun SosScreen(viewModel: MeshViewModel) {
     val transportName by viewModel.activeTransportName.collectAsState()
     val pendingCount by viewModel.pendingPacketCount.collectAsState()
     val activeHelperStatus by viewModel.activeHelperStatus.collectAsState()
+    val readiness by viewModel.readiness.collectAsState()
+    val serviceRunning by viewModel.serviceRunning.collectAsState()
+    val batteryLevel by viewModel.batteryLevel.collectAsState()
 
     var selectedCategory by remember { mutableStateOf(IncidentCategory.MEDICAL) }
     var message by remember { mutableStateOf("") }
@@ -109,13 +117,21 @@ fun SosScreen(viewModel: MeshViewModel) {
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
 
+            // ── Readiness problems (permissions, Bluetooth, Location) ─────────
+            ReadinessBanner(
+                readiness = readiness,
+                actions = readinessActions,
+                serviceRunning = serviceRunning,
+                onStartService = { viewModel.startService() },
+                modifier = Modifier.padding(bottom = 16.dp)
+            )
+
             // ── Status bar ────────────────────────────────────────────────────
             StatusBar(
                 peerCount = peerCount,
-                meshState = meshState,
                 transportName = transportName,
                 pendingCount = pendingCount,
-                batteryLevel = viewModel.batteryLevel
+                batteryLevel = batteryLevel
             )
 
             Spacer(Modifier.height(20.dp))
@@ -210,8 +226,9 @@ fun SosScreen(viewModel: MeshViewModel) {
 
             // ── SOS button ────────────────────────────────────────────────────
             SosButton(
-                isActive = meshState is MeshState.Originator || isSending,
-                enabled = meshState !is MeshState.Confirmed,
+                isActive = meshState is MeshState.Originator || meshState is MeshState.Confirmed || isSending,
+                isSending = isSending,
+                enabled = !isSending && meshState !is MeshState.Originator && meshState !is MeshState.Confirmed,
                 onSos = {
                     viewModel.sendSos(
                         category = selectedCategory,
@@ -223,7 +240,12 @@ fun SosScreen(viewModel: MeshViewModel) {
 
             Spacer(Modifier.height(12.dp))
             Text(
-                "Hold 2 seconds to send emergency SOS",
+                when {
+                    isSending -> "Getting your location and sending…"
+                    meshState is MeshState.Originator -> "SOS active. Cancel it above to send a new one."
+                    meshState is MeshState.Confirmed -> "SOS delivered. Tap Reset above when you are safe."
+                    else -> "Hold 2 seconds to send emergency SOS"
+                },
                 color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.4f),
                 fontSize = 12.sp,
                 textAlign = TextAlign.Center
@@ -243,12 +265,15 @@ fun SosScreen(viewModel: MeshViewModel) {
 @Composable
 fun SosButton(
     isActive: Boolean,
+    isSending: Boolean,
     enabled: Boolean,
     onSos: () -> Unit
 ) {
     val scope = rememberCoroutineScope()
     var progress by remember { mutableFloatStateOf(0f) }
     var isHolding by remember { mutableStateOf(false) }
+    var holdJob by remember { mutableStateOf<Job?>(null) }
+    val currentOnSos by rememberUpdatedState(onSos)
 
     val animatedScale by animateFloatAsState(
         targetValue = if (isHolding) 0.92f else 1f,
@@ -258,65 +283,94 @@ fun SosButton(
 
     val buttonColor = when {
         isActive -> SosRedDark
+        !enabled -> SosRed.copy(alpha = 0.6f)
         else -> SosRed
     }
 
-    Box(
-        contentAlignment = Alignment.Center,
-        modifier = Modifier
-            .size(200.dp)
-            .scale(animatedScale)
-            .shadow(
-                elevation = if (isActive) 16.dp else 8.dp,
-                shape = CircleShape,
-                ambientColor = SosRed.copy(alpha = 0.3f),
-                spotColor = SosRed.copy(alpha = 0.3f)
+    Box(contentAlignment = Alignment.Center, modifier = Modifier.size(224.dp)) {
+        // Hold progress ring
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            drawArc(
+                color = SosRed.copy(alpha = 0.15f),
+                startAngle = 0f,
+                sweepAngle = 360f,
+                useCenter = false,
+                style = Stroke(width = 8.dp.toPx())
             )
-            .clip(CircleShape)
-            .background(buttonColor)
-            .border(
-                4.dp,
-                if (isActive) Color.White else SosRed.copy(alpha = 0.6f),
-                CircleShape
-            )
-            .pointerInput(enabled) {
-                if (!enabled) return@pointerInput
-                detectTapGestures(
-                    onPress = {
-                        isHolding = true
-                        progress = 0f
-                        scope.launch {
-                            repeat(40) {
-                                if (!isHolding) return@repeat
-                                progress = (it + 1) / 40f
-                                delay(50)
-                            }
-                            if (isHolding) {
-                                onSos()
-                            }
-                        }
-                        tryAwaitRelease()
-                        isHolding = false
-                        progress = 0f
-                    }
+            if (progress > 0f) {
+                drawArc(
+                    color = SosRed,
+                    startAngle = -90f,
+                    sweepAngle = 360f * progress,
+                    useCenter = false,
+                    style = Stroke(width = 8.dp.toPx(), cap = StrokeCap.Round)
                 )
             }
-    ) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Text(
-                text = if (isActive) "SENT" else "SOS",
-                color = Color.White,
-                fontSize = 40.sp,
-                fontWeight = FontWeight.Black,
-                letterSpacing = 4.sp
-            )
-            if (isHolding && progress < 1f) {
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    "${(progress * 2).toInt() + 1}s…",
-                    color = Color.White.copy(alpha = 0.7f),
-                    fontSize = 14.sp
+        }
+        Box(
+            contentAlignment = Alignment.Center,
+            modifier = Modifier
+                .size(196.dp)
+                .scale(animatedScale)
+                .shadow(
+                    elevation = if (isActive) 16.dp else 8.dp,
+                    shape = CircleShape,
+                    ambientColor = SosRed.copy(alpha = 0.3f),
+                    spotColor = SosRed.copy(alpha = 0.3f)
                 )
+                .clip(CircleShape)
+                .background(buttonColor)
+                .border(
+                    4.dp,
+                    if (isActive) Color.White else SosRed.copy(alpha = 0.6f),
+                    CircleShape
+                )
+                .pointerInput(enabled) {
+                    if (!enabled) return@pointerInput
+                    detectTapGestures(
+                        onPress = {
+                            holdJob?.cancel()
+                            isHolding = true
+                            progress = 0f
+                            val job = scope.launch {
+                                for (step in 1..40) {
+                                    delay(50)
+                                    progress = step / 40f
+                                }
+                                isHolding = false
+                                progress = 0f
+                                currentOnSos()
+                            }
+                            holdJob = job
+                            tryAwaitRelease()
+                            // Released early: cancel this hold so it can never fire later.
+                            if (job.isActive) job.cancel()
+                            isHolding = false
+                            progress = 0f
+                        }
+                    )
+                }
+        ) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(
+                    text = when {
+                        isSending -> "…"
+                        isActive -> "SENT"
+                        else -> "SOS"
+                    },
+                    color = Color.White,
+                    fontSize = 40.sp,
+                    fontWeight = FontWeight.Black,
+                    letterSpacing = 4.sp
+                )
+                if (isHolding && progress < 1f) {
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "${(progress * 2).toInt() + 1}s…",
+                        color = Color.White.copy(alpha = 0.7f),
+                        fontSize = 14.sp
+                    )
+                }
             }
         }
     }
@@ -327,7 +381,6 @@ fun SosButton(
 @Composable
 fun StatusBar(
     peerCount: Int,
-    meshState: MeshState,
     transportName: String,
     pendingCount: Int,
     batteryLevel: Int
@@ -346,7 +399,7 @@ fun StatusBar(
             verticalAlignment = Alignment.CenterVertically
         ) {
             // Transport mode
-            val isNearby = transportName.contains("Nearby")
+            val isOnline = transportName != "Offline"
             Column {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Box(
@@ -357,8 +410,8 @@ fun StatusBar(
                     )
                     Spacer(Modifier.width(6.dp))
                     Text(
-                        if (isNearby) "WiFi Direct + BLE" else "Pure BLE",
-                        color = if (isNearby) SafeGreen else WarnAmber,
+                        if (isOnline) "Mesh: $transportName" else "Mesh offline",
+                        color = if (isOnline) SafeGreen else SosRed,
                         fontSize = 13.sp,
                         fontWeight = FontWeight.SemiBold
                     )
@@ -519,10 +572,20 @@ fun StateCard(
                         )
                     }
                 }
-                if (meshState is MeshState.Confirmed || meshState is MeshState.Error) {
+                val resetLabel = when (meshState) {
+                    is MeshState.Originator -> "Cancel SOS"
+                    is MeshState.Confirmed, is MeshState.Error -> "Reset"
+                    is MeshState.Relay, is MeshState.Uploading, is MeshState.AwaitingAck -> "Dismiss"
+                    else -> null
+                }
+                if (resetLabel != null) {
                     Spacer(Modifier.height(10.dp))
                     TextButton(onClick = onReset) {
-                        Text("Reset", color = MeshTeal, fontWeight = FontWeight.SemiBold)
+                        Text(
+                            resetLabel,
+                            color = if (meshState is MeshState.Originator) SosRed else MeshTeal,
+                            fontWeight = FontWeight.SemiBold
+                        )
                     }
                 }
             }
@@ -746,17 +809,21 @@ fun MeshState.title(): String = when (this) {
     is MeshState.Originator -> "SOS Sent"
     is MeshState.Relay -> "Relaying SOS"
     is MeshState.Uploading -> "Uploading…"
-    is MeshState.AwaitingAck -> "Awaiting Confirmation"
+    is MeshState.AwaitingAck -> "SOS Uploaded"
     is MeshState.Confirmed -> "SOS Confirmed ✓"
     is MeshState.Error -> "Error"
 }
 
 fun MeshState.subtitle(): String = when (this) {
     is MeshState.Idle -> ""
-    is MeshState.Originator -> "Relayed to $peersReached peer(s). Waiting for delivery confirmation."
+    is MeshState.Originator -> if (peersReached == 0) {
+        "No devices reached yet. Your SOS is sent automatically as soon as one comes in range."
+    } else {
+        "Reached $peersReached device(s). Waiting for an online device to confirm delivery."
+    }
     is MeshState.Relay -> "Hop ${packet.metadata.currentHops}/${packet.metadata.maxHops} — forwarding to peers."
     is MeshState.Uploading -> "Attempt $attemptNumber — uploading to emergency server."
-    is MeshState.AwaitingAck -> "Alert ID: $alertId. Waiting for ACK from originating device."
+    is MeshState.AwaitingAck -> "Uploaded to the emergency server. Alert ID: $alertId"
     is MeshState.Confirmed -> "Responders notified. Alert ID: ${ack.alertId}"
     is MeshState.Error -> reason
 }

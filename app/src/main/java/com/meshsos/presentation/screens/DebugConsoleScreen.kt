@@ -185,7 +185,6 @@ fun DebugConsoleScreen(viewModel: MeshViewModel) {
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            val isNearby = transportName.contains("Nearby")
             Row(verticalAlignment = Alignment.CenterVertically) {
                 val statusColor by animateColorAsState(
                     if (peerCount > 0) SafeGreen else WarnAmber,
@@ -197,7 +196,7 @@ fun DebugConsoleScreen(viewModel: MeshViewModel) {
                     buildAnnotatedString {
                         withStyle(SpanStyle(color = BRACKET_COLOR)) { append("transport") }
                         withStyle(SpanStyle(color = Color(0xFF79C0FF))) {
-                            append("=${if (isNearby) "nearby" else "ble"}")
+                            append("=${transportName.lowercase().replace(" ", "")}")
                         }
                         withStyle(SpanStyle(color = BRACKET_COLOR)) { append(" peers") }
                         withStyle(SpanStyle(color = if (peerCount > 0) SafeGreen else SosRed)) {
@@ -410,5 +409,5 @@ private fun MeshEventType.debugTag(): String = when (this) {
     MeshEventType.ERROR -> "ERROR"
 }
 
-private val debugTimeFormat = SimpleDateFormat("HH:mm:ss.S", Locale.getDefault())
-private fun Long.toDebugTimeString(): String = debugTimeFormat.format(Date(this * 1000))
+// Event timestamps are epoch seconds, so sub-second precision is not available.
+private fun Long.toDebugTimeString(): String = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date(this * 1000))

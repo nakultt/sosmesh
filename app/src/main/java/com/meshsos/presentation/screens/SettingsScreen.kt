@@ -24,10 +24,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -35,6 +32,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.meshsos.BuildConfig
 import com.meshsos.presentation.theme.MeshTeal
 import com.meshsos.presentation.theme.SafeGreen
 import com.meshsos.presentation.theme.SosRed
@@ -49,7 +47,9 @@ fun SettingsScreen(
     isDarkMode: Boolean
 ) {
     val scope = rememberCoroutineScope()
-    var autoRelayEnabled by remember { mutableStateOf(true) }
+    val autoRelayEnabled by viewModel.autoRelayEnabled.collectAsState()
+    val serviceRunning by viewModel.serviceRunning.collectAsState()
+    val peerCount by viewModel.peerCount.collectAsState()
 
     Column(
         modifier = Modifier
@@ -93,7 +93,7 @@ fun SettingsScreen(
                 label = "Auto Relay",
                 description = "Automatically relay SOS packets from nearby devices (Good Samaritan mode)",
                 checked = autoRelayEnabled,
-                onCheckedChange = { autoRelayEnabled = it }
+                onCheckedChange = { viewModel.setAutoRelayEnabled(it) }
             )
         }
 
@@ -101,6 +101,12 @@ fun SettingsScreen(
 
         // ── Device Identity ─────────────────────────────────────────────────
         SettingsSectionCard(title = "DEVICE IDENTITY") {
+            Text(
+                text = viewModel.localDeviceName,
+                color = MaterialTheme.colorScheme.onBackground,
+                fontSize = 15.sp,
+                fontWeight = FontWeight.Medium
+            )
             Text(
                 text = viewModel.localDeviceId,
                 color = MeshTeal,
@@ -122,17 +128,25 @@ fun SettingsScreen(
         // ── Service Control ─────────────────────────────────────────────────
         SettingsSectionCard(title = "SERVICE CONTROL") {
             Text(
-                "Manage the background mesh relay service",
+                "The relay keeps discovering devices and forwarding SOS messages in the background.",
                 color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f),
-                fontSize = 12.sp
+                fontSize = 12.sp,
+                lineHeight = 16.sp
             )
-            Spacer(Modifier.height(12.dp))
+            Spacer(Modifier.height(8.dp))
+            SettingsInfoRow(
+                label = "Status",
+                value = if (serviceRunning) "Running • $peerCount peer(s)" else "Stopped",
+                valueColor = if (serviceRunning) SafeGreen else SosRed
+            )
+            Spacer(Modifier.height(8.dp))
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 Button(
                     onClick = { viewModel.startService() },
+                    enabled = !serviceRunning,
                     modifier = Modifier.weight(1f),
                     shape = RoundedCornerShape(12.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = SafeGreen)
@@ -146,6 +160,7 @@ fun SettingsScreen(
                 }
                 Button(
                     onClick = { viewModel.stopService() },
+                    enabled = serviceRunning,
                     modifier = Modifier.weight(1f),
                     shape = RoundedCornerShape(12.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = SosRed)
@@ -165,8 +180,8 @@ fun SettingsScreen(
         // ── About ───────────────────────────────────────────────────────────
         SettingsSectionCard(title = "ABOUT") {
             SettingsInfoRow(label = "App Name", value = "MeshSOS")
-            SettingsInfoRow(label = "Version", value = "0.5.0")
-            SettingsInfoRow(label = "Build", value = "Production")
+            SettingsInfoRow(label = "Version", value = BuildConfig.VERSION_NAME)
+            SettingsInfoRow(label = "Build", value = if (BuildConfig.DEBUG) "Debug" else "Release")
         }
 
         Spacer(Modifier.height(32.dp))
@@ -245,7 +260,11 @@ private fun SettingsToggleRow(
 }
 
 @Composable
-private fun SettingsInfoRow(label: String, value: String) {
+private fun SettingsInfoRow(
+    label: String,
+    value: String,
+    valueColor: Color = MaterialTheme.colorScheme.onBackground
+) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -259,7 +278,7 @@ private fun SettingsInfoRow(label: String, value: String) {
         )
         Text(
             value,
-            color = MaterialTheme.colorScheme.onBackground,
+            color = valueColor,
             fontSize = 14.sp,
             fontWeight = FontWeight.Medium
         )
