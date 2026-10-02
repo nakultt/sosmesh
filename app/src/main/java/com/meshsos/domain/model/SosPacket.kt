@@ -5,6 +5,9 @@ import java.time.Instant
 import java.util.UUID
 
 private const val MAX_ROUTE_POINTS = 20
+private const val MAX_MESSAGE_LENGTH = 500
+
+private val gson = Gson()
 
 // ── Packet types ──────────────────────────────────────────────────────────────
 
@@ -27,7 +30,7 @@ data class SosPacket(
     val uploaded: Boolean = false,
     val uploadTimestamp: Long? = null
 ) {
-    fun toJson(): String = Gson().toJson(this)
+    fun toJson(): String = gson.toJson(this)
 
     fun toBytes(): ByteArray = toJson().toByteArray(Charsets.UTF_8)
 
@@ -65,8 +68,13 @@ data class SosPacket(
     )
 
     companion object {
+        /**
+         * Parses and validates a packet. Gson bypasses Kotlin constructors, so we
+         * parse into an all-nullable wire class and rebuild the domain object with
+         * defaults. Anything that is not a well-formed SOS packet returns null.
+         */
         fun fromJson(json: String): SosPacket? = try {
-            Gson().fromJson(json, SosPacket::class.java)
+            gson.fromJson(json, SosPacketWire::class.java)?.toDomain()
         } catch (e: Exception) {
             null
         }
@@ -119,13 +127,13 @@ data class AckPacket(
     val helperLocation: LocationInfo? = null,
     val helperTimestamp: Long? = null
 ) {
-    fun toBytes(): ByteArray = Gson().toJson(this).toByteArray(Charsets.UTF_8)
+    fun toBytes(): ByteArray = gson.toJson(this).toByteArray(Charsets.UTF_8)
 
     companion object {
         const val LOCAL_HELP_ALERT_PREFIX = "LOCAL_HELP:"
 
         fun fromBytes(bytes: ByteArray): AckPacket? = try {
-            Gson().fromJson(String(bytes, Charsets.UTF_8), AckPacket::class.java)
+            gson.fromJson(String(bytes, Charsets.UTF_8), AckPacketWire::class.java)?.toDomain()
         } catch (e: Exception) {
             null
         }
@@ -149,4 +157,131 @@ enum class MeshEventType {
     ACK_RECEIVED, PEER_CONNECTED, PEER_DISCONNECTED,
     TRANSPORT_SWITCHED, TTL_EXPIRED, HOP_LIMIT_REACHED,
     DUPLICATE_DROPPED, ERROR
+}
+
+// ── Wire (nullable) representations used only for safe deserialization ──────
+
+private data class LocationWire(
+    val lat: Double?,
+    val lng: Double?,
+    val accuracy: Float?,
+    val address: String?
+) {
+    fun toDomain(): LocationInfo? {
+        val latitude = lat ?: return null
+        val longitude = lng ?: return null
+        if (latitude.isNaN() || longitude.isNaN()) return null
+        if (latitude !in -90.0..90.0 || longitude !in -180.0..180.0) return null
+        return LocationInfo(
+            lat = latitude,
+            lng = longitude,
+            accuracy = accuracy?.takeIf { !it.isNaN() && it >= 0f } ?: 0f,
+            address = address.orEmpty()
+        )
+    }
+}
+
+private data class RoutePointWire(
+    val deviceId: String?,
+    val location: LocationWire?,
+    val timestamp: Long?
+) {
+    fun toDomain(fallbackTimestamp: Long): RoutePoint? {
+        val id = deviceId?.takeIf { it.isNotBlank() } ?: return null
+        return RoutePoint(
+            deviceId = id,
+            location = location?.toDomain(),
+            timestamp = timestamp ?: fallbackTimestamp
+        )
+    }
+}
+
+private data class IncidentWire(
+    val severity: Severity?,
+    val category: IncidentCategory?,
+    val message: String?,
+    val location: LocationWire?
+)
+
+private data class MetadataWire(
+    val createdAt: Long?,
+    val ttl: Int?,
+    val maxHops: Int?,
+    val currentHops: Int?,
+    val route: List<RoutePointWire?>?,
+    val batteryLevel: Int?
+)
+
+private data class SosPacketWire(
+    val id: String?,
+    val type: PacketType?,
+    val senderId: String?,
+    val incident: IncidentWire?,
+    val metadata: MetadataWire?,
+    val uploaded: Boolean?,
+    val uploadTimestamp: Long?
+) {
+    fun toDomain(): SosPacket? {
+        if (type != PacketType.SOS) return null
+        val packetId = id?.takeIf { it.isNotBlank() } ?: return null
+        val sender = senderId?.takeIf { it.isNotBlank() } ?: return null
+        val incidentWire = incident ?: return null
+        val now = Instant.now().epochSecond
+        val createdAt = metadata?.createdAt ?: now
+        val maxHops = (metadata?.maxHops ?: 10).coerceIn(1, MAX_ROUTE_POINTS)
+        return SosPacket(
+            id = packetId,
+            type = PacketType.SOS,
+            senderId = sender,
+            incident = IncidentInfo(
+                severity = incidentWire.severity ?: Severity.CRITICAL,
+                category = incidentWire.category ?: IncidentCategory.OTHER,
+                message = incidentWire.message.orEmpty().take(MAX_MESSAGE_LENGTH),
+                location = incidentWire.location?.toDomain()
+            ),
+            metadata = PacketMetadata(
+                createdAt = createdAt,
+                ttl = (metadata?.ttl ?: 3600).coerceIn(60, 24 * 3600),
+                maxHops = maxHops,
+                currentHops = (metadata?.currentHops ?: 0).coerceAtLeast(0),
+                route = metadata?.route.orEmpty()
+                    .mapNotNull { it?.toDomain(createdAt) }
+                    .takeLast(MAX_ROUTE_POINTS),
+                batteryLevel = (metadata?.batteryLevel ?: 100).coerceIn(0, 100)
+            ),
+            uploaded = uploaded ?: false,
+            uploadTimestamp = uploadTimestamp
+        )
+    }
+}
+
+private data class AckPacketWire(
+    val id: String?,
+    val type: PacketType?,
+    val originalPacketId: String?,
+    val alertId: String?,
+    val uploadedBy: String?,
+    val respondersNotified: Int?,
+    val estimatedArrival: String?,
+    val helperStatus: HelperStatus?,
+    val helperLocation: LocationWire?,
+    val helperTimestamp: Long?
+) {
+    fun toDomain(): AckPacket? {
+        if (type != PacketType.ACK) return null
+        val ackId = id?.takeIf { it.isNotBlank() } ?: return null
+        val packetId = originalPacketId?.takeIf { it.isNotBlank() } ?: return null
+        return AckPacket(
+            id = ackId,
+            type = PacketType.ACK,
+            originalPacketId = packetId,
+            alertId = alertId.orEmpty(),
+            uploadedBy = uploadedBy.orEmpty(),
+            respondersNotified = (respondersNotified ?: 0).coerceAtLeast(0),
+            estimatedArrival = estimatedArrival.orEmpty(),
+            helperStatus = helperStatus,
+            helperLocation = helperLocation?.toDomain(),
+            helperTimestamp = helperTimestamp
+        )
+    }
 }
