@@ -21,8 +21,15 @@ export default function AlertMap({
   const mapRef = useRef<HTMLDivElement>(null);
   const mapInstanceRef = useRef<L.Map | null>(null);
 
+  const routePoints = route
+    .map((point) => (typeof point === "string" ? null : point))
+    .filter((point): point is RoutePoint => !!point && !!point.location);
+  // Centre on the SOS origin, or on the first relay hop / uploader when the
+  // victim's device had no GPS fix.
+  const anchor = location ?? routePoints[0]?.location ?? relayLocation ?? null;
+
   useEffect(() => {
-    if (!mapRef.current || !location) return;
+    if (!mapRef.current || !anchor) return;
 
     // Cleanup previous map
     if (mapInstanceRef.current) {
@@ -33,7 +40,7 @@ export default function AlertMap({
     const map = L.map(mapRef.current, {
       zoomControl: false,
       attributionControl: true,
-    }).setView([location.lat, location.lng], 15);
+    }).setView([anchor.lat, anchor.lng], 15);
 
     L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
       attribution: '&copy; <a href="https://carto.com">CARTO</a>',
@@ -54,29 +61,27 @@ export default function AlertMap({
       className: "",
     });
 
-    L.marker([location.lat, location.lng], { icon: sosIcon })
-      .addTo(map)
-      .bindPopup(
-        `<div style="color:#333;font-family:monospace;font-size:12px">
-          <b>SOS Origin</b><br>
-          ${location.lat.toFixed(6)}, ${location.lng.toFixed(6)}<br>
-          Accuracy: ${location.accuracy?.toFixed(0) ?? "—"}m
-          ${location.address ? `<br>${location.address}` : ""}
-        </div>`
-      );
+    if (location) {
+      L.marker([location.lat, location.lng], { icon: sosIcon })
+        .addTo(map)
+        .bindPopup(
+          `<div style="color:#333;font-family:monospace;font-size:12px">
+            <b>SOS Origin</b><br>
+            ${location.lat.toFixed(6)}, ${location.lng.toFixed(6)}<br>
+            Accuracy: ${location.accuracy?.toFixed(0) ?? "—"}m
+            ${location.address ? `<br>${location.address}` : ""}
+          </div>`
+        );
 
-    // Accuracy circle
-    L.circle([location.lat, location.lng], {
-      radius: location.accuracy || 50,
-      color: "#F85149",
-      fillColor: "#F85149",
-      fillOpacity: 0.08,
-      weight: 1,
-    }).addTo(map);
-
-    const routePoints = route
-      .map((point) => (typeof point === "string" ? null : point))
-      .filter((point): point is RoutePoint => !!point && !!point.location);
+      // Accuracy circle
+      L.circle([location.lat, location.lng], {
+        radius: location.accuracy || 50,
+        color: "#F85149",
+        fillColor: "#F85149",
+        fillOpacity: 0.08,
+        weight: 1,
+      }).addTo(map);
+    }
 
     if (routePoints.length > 0) {
       const meshPath: [number, number][] = routePoints.map((point) => [
@@ -85,7 +90,7 @@ export default function AlertMap({
       ]);
 
       // Ensure origin exists as first map point.
-      if (meshPath.length === 0 || meshPath[0][0] !== location.lat || meshPath[0][1] !== location.lng) {
+      if (location && (meshPath[0][0] !== location.lat || meshPath[0][1] !== location.lng)) {
         meshPath.unshift([location.lat, location.lng]);
       }
 
@@ -123,7 +128,7 @@ export default function AlertMap({
       });
 
       map.fitBounds(L.latLngBounds(meshPath), { padding: [40, 40] });
-    } else if (relayLocation) {
+    } else if (relayLocation && location) {
       const relayIcon = L.divIcon({
         html: `<div style="
           width: 12px; height: 12px;
@@ -171,9 +176,11 @@ export default function AlertMap({
         mapInstanceRef.current = null;
       }
     };
+    // routePoints/anchor are derived from route/location/relayLocation
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [location, relayLocation, route, senderId]);
 
-  if (!location) {
+  if (!anchor) {
     return (
       <div
         className={`bg-bg-card border border-border rounded-xl flex items-center justify-center text-text-muted text-sm ${className}`}

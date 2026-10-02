@@ -17,13 +17,23 @@ Background (Foreground Service — keeps relay alive)
 
 ## Transport modes
 
-| Mode | Trigger | Range | Speed |
+| Mode | Uses | Range | Speed |
 |---|---|---|---|
-| NearbyConnections (WiFi Direct + BLE) | WiFi P2P available | 30–60m | High |
-| BLE GATT (pure BLE) | WiFi P2P disabled/unavailable | 10–15m | Low |
+| NearbyConnections | Bluetooth / BLE / Wi-Fi Direct (chosen by Play services) | 30–60m | High |
+| BLE GATT | Pure BLE (GATT server + client) | 10–15m | Low |
 
-The app auto-detects and switches at runtime. If the user turns off WiFi mid-session,
-the transport falls back to pure BLE automatically via `WifiP2pManager` broadcast.
+Both transports run **at the same time**. Packets are sent on every running transport and
+receivers deduplicate them by packet id, so two phones always find each other even if one
+of them is missing a permission or radio needed by the other transport. Transports are
+started/stopped automatically when Bluetooth, Location or permissions change.
+
+Peers exchange their mesh device id (BLE scan response + HELLO message, Nearby endpoint
+name), so each physical device is counted once no matter how many links exist.
+
+### Store-and-forward
+Every SOS a device originates or relays is re-sent whenever a new peer connects (and on a
+periodic safety net) until its TTL expires. ACKs and helper updates are flooded through
+the mesh and deduplicated by ACK id, so they reach the originator even if the route changed.
 
 ## Setup
 
@@ -68,8 +78,9 @@ Response:
 }
 ```
 
-### 5. Build and install
+### 5. Build, test and install
 ```bash
+./gradlew testDebugUnitTest   # packet parsing, wire codec, BLE framing
 ./gradlew assembleDebug
 adb install app/build/outputs/apk/debug/app-debug.apk
 ```
@@ -86,7 +97,9 @@ adb install app/build/outputs/apk/debug/app-debug.apk
 - [ ] All Bluetooth + Location permissions granted
 - [ ] Device B: Turn off mobile data + WiFi (airplane mode then re-enable BLE)
 - [ ] Observe relay hop trail in Log tab
-- [ ] Observe transport switching when WiFi is toggled
+- [ ] Status tab lists each peer once, with the transports it is reachable over
+- [ ] Turn Bluetooth off/on: the readiness banner appears and the mesh recovers by itself
+- [ ] Send an SOS with no peers in range, then bring a device in range: it is delivered
 
 ## Permissions required
 
@@ -103,11 +116,12 @@ adb install app/build/outputs/apk/debug/app-debug.apk
 
 | File | Purpose |
 |---|---|
-| `MeshStateMachine.kt` | Core state: IDLE → ORIGINATOR → RELAY → UPLOADING → CONFIRMED |
+| `MeshStateMachine.kt` | Core state: IDLE → ORIGINATOR → RELAY → UPLOADING → CONFIRMED, store-and-forward, ACK flooding |
 | `MeshForegroundService.kt` | Keeps BLE relay alive in background |
 | `NearbyConnectionsTransport.kt` | Primary WiFi Direct + BLE transport |
-| `BleGattTransport.kt` | Pure BLE fallback with chunked MTU writes |
-| `TransportManager.kt` | Runtime transport selection and switching |
+| `BleGattTransport.kt` | Pure BLE transport with a serialized GATT queue |
+| `BleFraming.kt` | MTU-sized framing and reassembly for BLE |
+| `TransportManager.kt` | Runs all transports concurrently and merges peers/packets |
 | `DeduplicationService.kt` | Prevents relay loops via UUID set |
 | `UploadPacketUseCase.kt` | Upload + retry with persistent queue |
 
@@ -119,8 +133,9 @@ adb install app/build/outputs/apk/debug/app-debug.apk
    force-stops the app, relaying stops.
 3. **BLE GATT fallback range is ~10–15m** — reliable indoors but requires devices
    to be closer than in WiFi Direct mode.
-4. **ACK back-propagation is best-effort** — if intermediate relay nodes have moved
-   out of range, the ACK may not reach the originator. The SOS is still uploaded.
+4. **ACK delivery is best-effort** — ACKs are flooded through whatever peers are in range;
+   if the originator is completely isolated it will not see the confirmation, but the SOS
+   is still uploaded.
 5. **Server URL is hardcoded** — replace before production deployment.
 
 ## Packet flow
